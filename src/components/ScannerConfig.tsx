@@ -97,7 +97,7 @@ function ScannerConfig({ cfIps, onScanComplete }: IpScannerConfigAndControlProps
                     cidrsToUse = (cfIps?.cm_cidrs && cfIps.cm_cidrs.length > 0) ? cfIps.cm_cidrs : (CF_CIDR_LIST || []);
 
                 if (!cidrsToUse || cidrsToUse.length === 0) {
-                    showToast('未找到Cloudflare IP段数据，请先点击上方的“获取cloudflareIP”按钮进行同步。', 'error');
+                    showToast('未找到Cloudflare IP段数据，请先点击上方的“同步IP段”按钮进行同步。', 'error');
                     setIsPreparing(false);
                     return;
                 }

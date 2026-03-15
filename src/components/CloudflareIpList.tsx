@@ -58,7 +58,7 @@ export function CloudflareIpList({ onDataLoaded }: CloudflareIpListProps) {
                     title="从上游同步最新的IP段"
                 >
                     <RotateCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-                    <span>{loading ? '同步中...' : '同步'}</span>
+                    <span>{loading ? '同步中...' : '同步IP段'}</span>
                 </button>
             </div>
             
