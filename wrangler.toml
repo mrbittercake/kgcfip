@@ -11,9 +11,6 @@ preview_id = "local_kv_preview_id"
 
 [vars]
 # 登录密码和APItoken，生产环境请在 Cloudflare Dashboard 设置
-LOGINPW = "后台登录密码"
-APITOKEN = "订阅链接TOKEN"
-JWT_SECRET = "普通请求鉴权"
-
-[assets]
-directory = "./dist"
+LOGINPW = "LOGINPW"
+APITOKEN = "APITOKEN"
+JWT_SECRET = "JWT_SECRET"
