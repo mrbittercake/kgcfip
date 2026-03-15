@@ -1,0 +1,19 @@
+name = "kgcfip"
+compatibility_date = "2026-03-09"
+
+# 本地开发 KV 绑定配置
+# 运行 npx wrangler pages dev 时会使用此配置创建本地模拟 KV
+# 这里的 id 和 preview_id 在本地开发时可以是任意字符串
+[[kv_namespaces]]
+binding = "IP_KV"
+id = "你自己的KV ID"
+preview_id = "local_kv_preview_id"
+
+[vars]
+# 登录密码和APItoken，生产环境请在 Cloudflare Dashboard 设置
+LOGINPW = "后台登录密码"
+APITOKEN = "订阅链接TOKEN"
+JWT_SECRET = "普通请求鉴权"
+
+[assets]
+directory = "./dist"
