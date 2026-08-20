@@ -40,9 +40,10 @@ async function testIpLatency(ip: string, port: number, timeout: number): Promise
 
     const timeoutId = setTimeout(() => controller.abort(), timeout);
 
-    const hexIp = ipToHex(ip);    
-    const testDomain = hexIp ? `${hexIp}.nip.cmliussss.hidns.vip` : `${ip}.nip.cmliussss.hidns.vip`;    
-    const testUrl = `https://${testDomain}:${port}`;
+    const hexIp = ipToHex(ip);
+    // 通过 IP 转换得到的十六进制拼接测速域名，返回的 JSON 中 "colo" 字段即为机场码
+    const testDomain = hexIp ? `${hexIp}.ns.psb.kdns.fr` : `${ip}.ns.psb.kdns.fr`;
+    const testUrl = `https://${testDomain}/ip.json?_t=${Date.now()}`;
 
     try {
         // 第一次请求用于预热 DNS、TLS 等，并获取 colo
@@ -57,7 +58,7 @@ async function testIpLatency(ip: string, port: number, timeout: number): Promise
 
         let colo = '-';
         try {
-            // 这个特殊 worker 的响应体包含 colo 信息
+            // 该测速地址的响应体包含 colo 信息 (例如 {"colo": "LAX", ...})
             const data = await response1.json() as { colo?: string };
             if (data?.colo) {
                 colo = data.colo;

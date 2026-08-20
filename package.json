@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev:vite": "vite",
-    "dev": "wrangler pages dev --kv=IP_KV -- npm run dev:vite",
+    "dev": "wrangler pages dev --kv=IP_KV --proxy 5173 -- npm run dev:vite",
     "build": "tsc && vite build",
     "deploy": "npm run build && wrangler pages deploy dist",
     "preview": "vite preview"
