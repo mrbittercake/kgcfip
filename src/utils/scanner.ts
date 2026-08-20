@@ -43,7 +43,7 @@ async function testIpLatency(ip: string, port: number, timeout: number): Promise
     const hexIp = ipToHex(ip);
     // 通过 IP 转换得到的十六进制拼接测速域名，返回的 JSON 中 "colo" 字段即为机场码
     const testDomain = hexIp ? `${hexIp}.ns.psb.kdns.fr` : `${ip}.ns.psb.kdns.fr`;
-    const testUrl = `https://${testDomain}/ip.json?_t=${Date.now()}`;
+    const testUrl = `https://${testDomain}:${port}/ip.json?_t=${Date.now()}`;
 
     try {
         // 第一次请求用于预热 DNS、TLS 等，并获取 colo

@@ -19,8 +19,8 @@ const PORTS_TO_TEST = [80, 443, 8080, 8880, 2052, 2053, 2082, 2083, 2086, 2087, 
 
 export function ScannerConfig({ cfIps, onScanComplete }: IpScannerConfigAndControlProps) {
     const [count, setCount] = useState<string>('500');
-    const [threads, setThreads] = useState<string>('32');
-    const [latencyLimit, setLatencyLimit] = useState<string>('2000');
+    const [threads, setThreads] = useState<string>('16');
+    const [latencyLimit, setLatencyLimit] = useState<string>('1000');
     const [countError, setCountError] = useState<string>('');
     const [threadsError, setThreadsError] = useState<string>('');
     const [latencyLimitError, setLatencyLimitError] = useState<string>('');
