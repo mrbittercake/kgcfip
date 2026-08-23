@@ -78,7 +78,7 @@ export function ScannerResults({ scanResults, onSaveSuccess }: IpScannerResultsA
         try{
             const dataToSave = limitedResults.map(({ isAvailable, ...rest }) => rest);
             await saveResults(sceneName.trim(), dataToSave as ScanResult[], saveMode);
-            showToast(`场景 "${sceneName.trim()}" 保存成功！\n共 ${limitedResults.length} 个IP\n模式: ${saveMode === 'overwrite' ? '覆盖' : '追加'}`, 'success');
+            showToast(`场景 "${sceneName.trim()}" 保存成功！\n共 ${limitedResults.length} 个IP/域名\n模式: ${saveMode === 'overwrite' ? '覆盖' : '追加'}`, 'success');
             if (onSaveSuccess) onSaveSuccess();
         } catch (error) {
             console.error('Failed to save results:', error);
@@ -93,7 +93,7 @@ export function ScannerResults({ scanResults, onSaveSuccess }: IpScannerResultsA
         <div className="bg-white dark:bg-gray-800 shadow-md rounded-lg p-6 mb-8">
             <div className="flex items-center gap-3 mb-4">
                 <ListFilter className="w-7 h-7 text-purple-500" />
-                <h2 className="text-2xl font-semibold text-gray-700 dark:text-gray-200">IP优选测速结果</h2>
+                <h2 className="text-2xl font-semibold text-gray-700 dark:text-gray-200">IP/域名优选测速结果</h2>
             </div>
             {scanResults.length > 0 ? (
                 <>
@@ -208,16 +208,19 @@ export function ScannerResults({ scanResults, onSaveSuccess }: IpScannerResultsA
                     <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
                         <thead className="bg-gray-50 dark:bg-gray-700 sticky top-0">
                             <tr>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">IP 地址</th>
+                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">IP/域名</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">端口</th>
                                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">延迟 (ms)</th>
                                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">地区</th>
                             </tr>
                         </thead>
                         <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
-                            {limitedResults.map(({ ip, port, latency, colo }) => (
+                            {limitedResults.map(({ ip, port, latency, colo, domain }) => (
                                 <tr key={`${ip}:${port}`} className="hover:bg-gray-100 dark:hover:bg-gray-700">
-                                    <td className="px-6 py-4 whitespace-nowrap text-sm font-mono text-gray-900 dark:text-white">{ip}</td>
+                                    <td className="px-6 py-4 whitespace-nowrap text-sm font-mono text-gray-900 dark:text-white">
+                                        {ip}
+                                        {domain && <span className="ml-2 px-1.5 py-0.5 text-[10px] rounded bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300">域名</span>}
+                                    </td>
                                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">{port}</td>
                                     <td className={`px-6 py-4 whitespace-nowrap text-sm font-bold ${getLatencyColor(latency)}`}>{latency > -1 ? `${latency}ms` : 'N/A'}</td>
                                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">{colo ? <RegionDisplay colo={colo} flagSize="sm" /> : '-'}</td>
@@ -230,7 +233,7 @@ export function ScannerResults({ scanResults, onSaveSuccess }: IpScannerResultsA
                 <div className="mt-6 p-4 bg-gray-50 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600">
                     <div className="flex items-center gap-3 mb-4">
                         <h3 className="text-lg font-semibold text-gray-700 dark:text-gray-200">保存结果</h3>
-                        <span className="px-2.5 py-0.5 bg-green-100 text-green-800 text-sm font-semibold rounded-full dark:bg-green-900 dark:text-green-300">{limitedResults.length} 个IP</span>
+                        <span className="px-2.5 py-0.5 bg-green-100 text-green-800 text-sm font-semibold rounded-full dark:bg-green-900 dark:text-green-300">{limitedResults.length} 个IP/域名</span>
                     </div>
                     <div className="flex flex-wrap items-center gap-4">
                         <div>

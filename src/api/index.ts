@@ -10,10 +10,17 @@ export interface SceneInfo {
     name: string;
 }
 
+export interface ThirdPartyIpItem {
+    ip: string;
+    port: number;
+}
+
 export interface ThirdPartyData {
     total: number;
-    sources: { url: string; count: number }[];
-    ips: string[];
+    ipCount: number; // 去重后的 IP 条目数
+    domainCount: number; // 去重后的域名条目数
+    sources: { url: string; count: number; ipCount: number; domainCount: number }[];
+    ips: ThirdPartyIpItem[];
 }
 
 /**

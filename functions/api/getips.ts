@@ -127,7 +127,8 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
         
         const formattedResults = allItems.map(item => {
             const region = item.colo ? getColoName(item.colo) : '未知';
-            return `${item.ip}:${item.port}#${region}|${item.sceneName}|${item.latency}ms`;
+            const alias = `${region}|${item.sceneName}`;
+            return `${item.ip}:${item.port}#${alias}|${item.latency}ms`;
         });
         
         return new Response(formattedResults.join('\n'), {

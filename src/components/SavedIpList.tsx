@@ -13,6 +13,7 @@ interface SavedIpData {
     port: number;
     latency: number;
     colo?: string;
+    domain?: boolean; // 是否为域名源
 }
 interface FlatIpItem extends SavedIpData {
     sceneName: string;
@@ -85,7 +86,7 @@ export function SavedIpList() {
 
     const handleDeleteSelected = async () => {
         if (selectedItems.size === 0) return;
-        const isConfirmed = await confirm(`确定要删除选中的 ${selectedItems.size} 个IP吗？`, {
+        const isConfirmed = await confirm(`确定要删除选中的 ${selectedItems.size} 个IP/域名吗？`, {
             confirmText: '确定删除',
         });
         if (!isConfirmed) return;
@@ -215,8 +216,8 @@ export function SavedIpList() {
                 <div className="flex items-center justify-between flex-wrap gap-4">
                     <div className="flex items-center gap-3">
                         <ListChecks className="w-7 h-7 text-green-500" />
-                        <h2 className="text-2xl font-semibold text-gray-700 dark:text-gray-200">已保存的 IP 列表</h2>
-                        <span className="px-2.5 py-0.5 bg-green-100 text-green-800 text-sm font-semibold rounded-full dark:bg-green-900 dark:text-green-300">{items.length} 个IP</span>
+                        <h2 className="text-2xl font-semibold text-gray-700 dark:text-gray-200">已保存的 IP/域名 列表</h2>
+                        <span className="px-2.5 py-0.5 bg-green-100 text-green-800 text-sm font-semibold rounded-full dark:bg-green-900 dark:text-green-300">{items.length} 个IP/域名</span>
                     </div>
                     <div className="flex items-center gap-4">
                         {selectedItems.size > 0 && (
@@ -276,7 +277,7 @@ export function SavedIpList() {
                                     className="rounded text-purple-600 focus:ring-purple-500 h-4 w-4"
                                 />
                             </th>
-                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">IP</th>
+                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">IP/域名</th>
                             <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">端口</th>
                             <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">延迟</th>
                             <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">地区代码</th>
@@ -300,7 +301,10 @@ export function SavedIpList() {
                                             className="rounded text-purple-600 focus:ring-purple-500 h-4 w-4"
                                         />
                                     </td>
-                                    <td className="px-4 py-2 whitespace-nowrap text-sm font-mono text-gray-900 dark:text-white">{item.ip}</td>
+                                    <td className="px-4 py-2 whitespace-nowrap text-sm font-mono text-gray-900 dark:text-white">
+                                        {item.ip}
+                                        {item.domain && <span className="ml-2 px-1.5 py-0.5 text-[10px] rounded bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300">域名</span>}
+                                    </td>
                                     <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">{item.port}</td>
                                     <td className={`px-4 py-2 whitespace-nowrap text-sm font-semibold ${getLatencyColor(item.latency)}`}>
                                         {item.latency > -1 ? `${item.latency}ms` : 'N/A'}

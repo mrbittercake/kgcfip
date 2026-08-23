@@ -56,52 +56,74 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
     });
 
     const results = await Promise.all(fetchPromises);
-    const allIps = new Set<string>();
-    const sourceStats: { url: string; count: number }[] = [];
+    const allIps = new Map<string, { ip: string; port: number }>();
+    const sourceStats: { url: string; count: number; ipCount: number; domainCount: number }[] = [];
 
     // 3. 解析结果
     results.forEach(result => {
         let count = 0;
+        let srcIpCount = 0;
+        let srcDomainCount = 0;
         if (result.status === 'ok' && result.text) {
             const lines = result.text.split(/[\r\n]+/); // 兼容各种换行符
-            
+
             for (const line of lines) {
                 const trimmed = line.trim();
                 // 忽略空行、注释或HTML错误页
                 if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('<') || trimmed.startsWith('//')) continue;
 
-                // 处理格式: IP:PORT#NAME 或 IP:PORT
-                // 取 # 前面的部分
-                const [ipPart] = trimmed.split('#');
+                // 处理格式: HOST:PORT#NAME 或 HOST:PORT
+                // HOST 可以是 IP 或域名，取 # 前面的部分（#NAME 部分忽略）
+                const hashIndex = trimmed.indexOf('#');
+                const ipPart = (hashIndex > -1 ? trimmed.substring(0, hashIndex) : trimmed).trim();
                 if (!ipPart) continue;
 
-                const cleanIpPart = ipPart.trim();
-                
-                // 简单的正则匹配 IPv4 或 IPv6（可选端口）
-                // IPv4: 1.1.1.1 或 1.1.1.1:443
-                // IPv6: [2400:cb00::1]:443 或 2400:cb00::1
-                
-                // 检查是否看起来像 IP (包含数字、点、冒号) 且不包含 HTTP (防止把 URL 当 IP)
-                if (/^[0-9a-fA-F:.[\]]+$/.test(cleanIpPart) && !cleanIpPart.toLowerCase().includes('http')) {
-                    
-                    // 判断是否包含端口
-                    // 逻辑：如果最后部分是 :数字，则认为包含端口
-                    // 注意 IPv6 的复杂性，如果包含多个 : 且没有 []，我们简单判定
-                    
-                    const hasPort = /:(\d+)$/.test(cleanIpPart);
-                    const finalIp = hasPort ? cleanIpPart : `${cleanIpPart}:443`;
-                    
-                    allIps.add(finalIp);
-                    count++;
+                // 检查是否包含 HTTP（防止把完整 URL 当条目）
+                if (ipPart.toLowerCase().includes('http')) continue;
+
+                // 拆分 host 与 port（支持 IPv4:PORT、[IPv6]:PORT、域名:PORT）
+                let host = ipPart;
+                let port: number | undefined;
+                const lastColon = ipPart.lastIndexOf(':');
+                const closeBracket = ipPart.lastIndexOf(']');
+                if (lastColon > -1 && lastColon > closeBracket) {
+                    const portPart = ipPart.substring(lastColon + 1);
+                    const parsedPort = parseInt(portPart, 10);
+                    if (!isNaN(parsedPort)) {
+                        port = parsedPort;
+                        host = ipPart.substring(0, lastColon);
+                        if (host.startsWith('[') && host.endsWith(']')) {
+                            host = host.substring(1, host.length - 1);
+                        }
+                    }
                 }
+
+                const finalPort = port ?? 443;
+                const key = `${host}:${finalPort}`;
+                const entry: { ip: string; port: number } = { ip: host, port: finalPort };
+                allIps.set(key, entry);
+                count++;
+                const isDomain = !/^(?:\d{1,3}\.){3}\d{1,3}$/.test(host) && !host.includes(':');
+                if (isDomain) srcDomainCount++;
+                else srcIpCount++;
             }
         }
-        sourceStats.push({ url: result.url, count });
+        sourceStats.push({ url: result.url, count, ipCount: srcIpCount, domainCount: srcDomainCount });
     });
 
-    const finalIps = Array.from(allIps);
+    const finalIps = Array.from(allIps.values());
+    // 区分 IP 与域名条目（去重后）
+    let ipCount = 0;
+    let domainCount = 0;
+    for (const item of finalIps) {
+        const isDomain = !/^(?:\d{1,3}\.){3}\d{1,3}$/.test(item.ip) && !item.ip.includes(':');
+        if (isDomain) domainCount++;
+        else ipCount++;
+    }
     return new Response(JSON.stringify({
         total: finalIps.length,
+        ipCount,
+        domainCount,
         sources: sourceStats,
         ips: finalIps
     }), {

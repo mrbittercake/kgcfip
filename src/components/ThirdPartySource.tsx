@@ -49,7 +49,7 @@ export function ThirdPartySource() {
             <div className="flex items-center justify-between gap-4 mb-4">
                 <div className="flex items-center gap-3">
                     <Globe className="w-7 h-7 text-indigo-500" />
-                    <h2 className="text-2xl font-semibold text-gray-700 dark:text-gray-200">第三方 IP 源</h2>
+                    <h2 className="text-2xl font-semibold text-gray-700 dark:text-gray-200">第三方 IP/域名 源</h2>
                 </div>
                 <button
                     onClick={handleSave}

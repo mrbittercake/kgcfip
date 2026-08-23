@@ -5,6 +5,8 @@ import {
     BatchScanner,
     ScanResult,
     CF_CIDR_LIST,
+    isDomainName,
+    resolveDomainToIp,
 } from '../utils/scanner';
 import { useToast } from './Toast';
 import { Gauge, Play, StopCircle, Loader2 } from 'lucide-react';
@@ -19,7 +21,7 @@ const PORTS_TO_TEST = [80, 443, 8080, 8880, 2052, 2053, 2082, 2083, 2086, 2087, 
 
 export function ScannerConfig({ cfIps, onScanComplete }: IpScannerConfigAndControlProps) {
     const [count, setCount] = useState<string>('500');
-    const [threads, setThreads] = useState<string>('16');
+    const [threads, setThreads] = useState<string>('8');
     const [latencyLimit, setLatencyLimit] = useState<string>('1000');
     const [countError, setCountError] = useState<string>('');
     const [threadsError, setThreadsError] = useState<string>('');
@@ -35,6 +37,8 @@ export function ScannerConfig({ cfIps, onScanComplete }: IpScannerConfigAndContr
     const [sourceStats, setSourceStats] = useState<ThirdPartyData['sources']>([]);
     const [uniqueIpCount, setUniqueIpCount] = useState(0);
     const [grossIpCount, setGrossIpCount] = useState(0);
+    const [ipCount, setIpCount] = useState(0);
+    const [domainCount, setDomainCount] = useState(0);
     const [isPreparing, setIsPreparing] = useState(false);
 
     const scannerRef = useRef<BatchScanner | null>(null);
@@ -100,10 +104,12 @@ export function ScannerConfig({ cfIps, onScanComplete }: IpScannerConfigAndContr
         return true;
     };
 
-    const prepareTargets = async (countNum: number): Promise<string[] | null> => {
+    const prepareTargets = async (countNum: number): Promise<{ targets: string[]; resolvedMap?: Record<string, string | null> } | null> => {
         setSourceStats([]);
         setUniqueIpCount(0);
         setGrossIpCount(0);
+        setIpCount(0);
+        setDomainCount(0);
 
         if (cancelPreparingRef.current) return null;
 
@@ -117,7 +123,27 @@ export function ScannerConfig({ cfIps, onScanComplete }: IpScannerConfigAndContr
             setSourceStats(data.sources);
             setUniqueIpCount(data.total);
             setGrossIpCount(data.sources.reduce((acc, s) => acc + s.count, 0));
-            return data.ips;
+            setIpCount(data.ipCount ?? 0);
+            setDomainCount(data.domainCount ?? 0);
+
+            const targets: string[] = [];
+            const domainItems: { key: string; host: string }[] = [];
+            for (const item of data.ips) {
+                const key = `${item.ip}:${item.port}`;
+                targets.push(key);
+                // 收集域名源，前端用阿里云 DoH 解析出测速 IP
+                if (isDomainName(item.ip)) domainItems.push({ key, host: item.ip });
+            }
+
+            const resolvedMap: Record<string, string | null> = {};
+            if (domainItems.length > 0) {
+                const entries = await Promise.all(
+                    domainItems.map(async ({ key, host }) => [key, await resolveDomainToIp(host)] as const)
+                );
+                for (const [key, ip] of entries) resolvedMap[key] = ip;
+            }
+
+            return { targets, resolvedMap };
         }
 
         const cidrsToUse = ipSource === 'cf'
@@ -128,7 +154,7 @@ export function ScannerConfig({ cfIps, onScanComplete }: IpScannerConfigAndContr
             showToast('未找到Cloudflare IP段数据，请先点击上方的"同步IP段"按钮进行同步。', 'error');
             return null;
         }
-        return generateRandomIps(cidrsToUse, countNum);
+        return { targets: generateRandomIps(cidrsToUse, countNum) };
     };
 
     const handleScan = async () => {
@@ -147,11 +173,12 @@ export function ScannerConfig({ cfIps, onScanComplete }: IpScannerConfigAndContr
             }
 
             // Step 2: 准备靶标 IP
-            const targets = await prepareTargets(val.countNum);
-            if (!targets || targets.length === 0 || cancelPreparingRef.current) {
+            const prepared = await prepareTargets(val.countNum);
+            if (!prepared || prepared.targets.length === 0 || cancelPreparingRef.current) {
                 setIsPreparing(false);
                 return;
             }
+            const targets = prepared.targets;
 
             // Step 3: 初始化扫描状态
             setProgress(0);
@@ -190,6 +217,7 @@ export function ScannerConfig({ cfIps, onScanComplete }: IpScannerConfigAndContr
                 val.latencyLimitNum,
                 onProgress,
                 onComplete,
+                prepared.resolvedMap,
             );
             scannerRef.current = scanner;
 
@@ -250,7 +278,7 @@ export function ScannerConfig({ cfIps, onScanComplete }: IpScannerConfigAndContr
                                 : 'text-gray-600 hover:text-gray-800 dark:text-gray-400 dark:hover:text-white'
                         }`}
                     >
-                        第三方IP源
+                        第三方IP/域名源
                     </button>
                 </div>
             </div >
@@ -334,12 +362,14 @@ export function ScannerConfig({ cfIps, onScanComplete }: IpScannerConfigAndContr
             {/* 第三方源统计展示区 */}
             {ipSource === 'third' && sourceStats.length > 0 && (
                 <div className="mb-4 bg-gray-50 dark:bg-gray-700/50 rounded-lg p-3 border border-gray-100 dark:border-gray-700">
-                    <h3 className="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">第三方IP获取详情</h3>
+                    <h3 className="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">第三方IP/域名获取详情</h3>
                     
                     {/* 新增的总览信息 */}
                     <div className="mb-3 text-sm text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-gray-800/50 p-2 rounded-md text-center">
-                        共发现 <strong className="text-blue-500 font-semibold">{grossIpCount}</strong> 个 IP，
-                        去重后剩余 <strong className="text-purple-500 font-semibold">{uniqueIpCount}</strong> 个有效 IP 用于测试。
+                        共发现 <strong className="text-blue-500 font-semibold">{grossIpCount}</strong> 个记录，
+                        去重后剩余 <strong className="text-purple-500 font-semibold">{uniqueIpCount}</strong> 个，
+                        其中 IP <strong className="text-green-500 font-semibold">{ipCount}</strong> 个、
+                        域名 <strong className="text-orange-500 font-semibold">{domainCount}</strong> 个。
                     </div>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -348,8 +378,13 @@ export function ScannerConfig({ cfIps, onScanComplete }: IpScannerConfigAndContr
                                 <div className="truncate flex-1 mr-2 text-gray-600 dark:text-gray-300 font-mono" title={stat.url}>
                                     {stat.url.replace(/^https?:\/\//, '')}
                                 </div>
-                                <span className={`px-2 py-0.5 rounded-full font-bold shadow-sm ${stat.count > 0 ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'}`}>
-                                    {stat.count}
+                                <span className="flex items-center gap-1">
+                                    <span className="px-2 py-0.5 rounded-full font-bold shadow-sm bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400" title="IP 个数">
+                                        IP {stat.ipCount}
+                                    </span>
+                                    <span className="px-2 py-0.5 rounded-full font-bold shadow-sm bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400" title="域名个数">
+                                        域名 {stat.domainCount}
+                                    </span>
                                 </span>
                             </div>
                         ))}
