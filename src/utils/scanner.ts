@@ -160,6 +160,8 @@ export class BatchScanner {
     private abortController: AbortController;
     // 解析出的测速IP映射：key 为 "host:port"，value 为实际用于测速的IP（域名解析后）
     private resolvedMap?: Record<string, string | null>;
+    private paused = false;
+    private resumeResolvers: Array<() => void> = [];
 
     constructor(
         ips: string[],
@@ -182,6 +184,17 @@ export class BatchScanner {
 
     public stop() {
         this.abortController.abort();
+    }
+
+    public pause() {
+        this.paused = true;
+    }
+
+    public resume() {
+        this.paused = false;
+        const resolvers = this.resumeResolvers;
+        this.resumeResolvers = [];
+        resolvers.forEach((r) => r());
     }
 
     /**
@@ -217,6 +230,11 @@ export class BatchScanner {
         const worker = async () => {
             while (queue.length > 0) {
                 if (this.abortController.signal.aborted) break;
+                if (this.paused) {
+                    await new Promise<void>((resolve) => { this.resumeResolvers.push(resolve); });
+                    if (this.abortController.signal.aborted) break;
+                    continue;
+                }
 
                 const rawTarget = queue.shift();
                 if (!rawTarget) continue;

@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { CloudflareIps, getThirdPartyIps, ThirdPartyData } from '../api';
 import {
     generateRandomIps,
@@ -9,7 +9,7 @@ import {
     resolveDomainToIp,
 } from '../utils/scanner';
 import { useToast } from './Toast';
-import { Gauge, Play, StopCircle, Loader2 } from 'lucide-react';
+import { Gauge, Play, StopCircle, Loader2, Pause, Square } from 'lucide-react';
 import { useConfirm } from './ConfirmDialog';
 
 interface IpScannerConfigAndControlProps {
@@ -40,6 +40,10 @@ export function ScannerConfig({ cfIps, onScanComplete }: IpScannerConfigAndContr
     const [ipCount, setIpCount] = useState(0);
     const [domainCount, setDomainCount] = useState(0);
     const [isPreparing, setIsPreparing] = useState(false);
+    const [startTime, setStartTime] = useState<number | null>(null);
+    const [now, setNow] = useState(Date.now());
+    const [isPaused, setIsPaused] = useState(false);
+    const [pausedAt, setPausedAt] = useState<number | null>(null);
 
     const scannerRef = useRef<BatchScanner | null>(null);
     const cancelPreparingRef = useRef(false);
@@ -200,16 +204,20 @@ export function ScannerConfig({ cfIps, onScanComplete }: IpScannerConfigAndContr
 
             const onComplete = (finalResults: ScanResult[]) => {
                 setIsStopping(false);
+                setIsPaused(false);
                 if (scannerRef.current) {
                     scannerRef.current.stop();
                 }
                 setIsScanning(false);
+                setStartTime(null);
                 onScanComplete(finalResults);
             };
 
             // Step 4: 启动扫描
             setIsPreparing(false);
             setIsScanning(true);
+            setStartTime(Date.now());
+            setNow(Date.now());
             const scanner = new BatchScanner(
                 targets,
                 ipSource === 'third' ? 0 : selectedPort,
@@ -226,16 +234,47 @@ export function ScannerConfig({ cfIps, onScanComplete }: IpScannerConfigAndContr
             console.error('Scan failed:', error);
             setIsScanning(false);
             setIsPreparing(false);
+            setIsPaused(false);
+            setStartTime(null);
             showToast('启动测试失败，请检查控制台错误信息', 'error');
         }
     };
 
     const handleStopScan = () => {
         setIsStopping(true);
+        setIsPaused(false);
+        setStartTime(null);
         if (scannerRef.current) {
             scannerRef.current.stop();
         }
     };
+
+    const handlePause = () => {
+        if (scannerRef.current) {
+            scannerRef.current.pause();
+        }
+        setPausedAt(Date.now());
+        setIsPaused(true);
+    };
+
+    const handleResume = () => {
+        if (scannerRef.current && pausedAt !== null) {
+            // 将暂停时长补偿到 startTime，使已用时连续、预计剩余准确
+            setStartTime((prev) => (prev !== null ? prev + (Date.now() - pausedAt) : prev));
+        }
+        setPausedAt(null);
+        if (scannerRef.current) {
+            scannerRef.current.resume();
+        }
+        setIsPaused(false);
+    };
+
+    // 扫描进行中且未暂停时，每 1 秒刷新 now 以更新已用时间
+    useEffect(() => {
+        if (!isScanning || isPaused) return;
+        const timer = setInterval(() => setNow(Date.now()), 1000);
+        return () => clearInterval(timer);
+    }, [isScanning, isPaused]);
 
     return (
         <div className="bg-white dark:bg-gray-800 shadow-md rounded-lg p-6 mb-8">
@@ -379,12 +418,21 @@ export function ScannerConfig({ cfIps, onScanComplete }: IpScannerConfigAndContr
                                     {stat.url.replace(/^https?:\/\//, '')}
                                 </div>
                                 <span className="flex items-center gap-1">
-                                    <span className="px-2 py-0.5 rounded-full font-bold shadow-sm bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400" title="IP 个数">
-                                        IP {stat.ipCount}
-                                    </span>
-                                    <span className="px-2 py-0.5 rounded-full font-bold shadow-sm bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400" title="域名个数">
-                                        域名 {stat.domainCount}
-                                    </span>
+                                    {stat.ipCount > 0 && (
+                                        <span className="px-2 py-0.5 rounded-full font-bold shadow-sm bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400" title="IP 个数">
+                                            IP {stat.ipCount}
+                                        </span>
+                                    )}
+                                    {stat.domainCount > 0 && (
+                                        <span className="px-2 py-0.5 rounded-full font-bold shadow-sm bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400" title="域名个数">
+                                            域名 {stat.domainCount}
+                                        </span>
+                                    )}
+                                    {stat.ipCount === 0 && stat.domainCount === 0 && (
+                                        <span className="px-2 py-0.5 rounded-full font-bold shadow-sm bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400">
+                                            未解析出
+                                        </span>
+                                    )}
                                 </span>
                             </div>
                         ))}
@@ -392,21 +440,70 @@ export function ScannerConfig({ cfIps, onScanComplete }: IpScannerConfigAndContr
                 </div>
             )}
 
-            {isScanning && (
-                <div className="mb-4">
-                    <div className="flex justify-between mb-1">
-                        <span className="text-base font-medium text-purple-700 dark:text-white">进度</span>
-                        <span className="text-sm font-medium text-purple-700 dark:text-white">任务: {progress} / {total}</span>
+            {isScanning && (() => {
+                const endRef = isPaused && pausedAt !== null ? pausedAt : now;
+                const elapsedSec = startTime ? Math.floor((endRef - startTime) / 1000) : 0;
+                const percent = total > 0 ? Math.round((progress / total) * 100) : 0;
+                const fmt = (s: number) => {
+                    const m = Math.floor(s / 60);
+                    const sec = s % 60;
+                    return `${m}:${sec.toString().padStart(2, '0')}`;
+                };
+                return (
+                    <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-30 w-[calc(100%-2rem)] max-w-xl px-5 py-3 rounded-xl bg-white/95 dark:bg-gray-800/95 backdrop-blur border border-gray-200 dark:border-gray-700 shadow-[0_-4px_16px_rgba(0,0,0,0.12)]">
+                        <div className="flex justify-between items-center mb-1">
+                            <span className="text-base font-medium text-purple-700 dark:text-white">
+                                进度 {percent}%
+                            </span>
+                            <div className="flex items-center gap-2">
+                                <span className="text-sm font-medium text-purple-700 dark:text-white mr-1">
+                                    任务: {progress} / {total}
+                                </span>
+                                {isPaused ? (
+                                    <button
+                                        type="button"
+                                        onClick={handleResume}
+                                        aria-label="继续测试"
+                                        title="继续测试"
+                                        className="p-1.5 rounded-full text-green-600 bg-green-100 hover:bg-green-200 dark:bg-green-900/50 dark:text-green-300 dark:hover:bg-green-800/50 transition-colors"
+                                    >
+                                        <Play className="w-4 h-4" />
+                                    </button>
+                                ) : (
+                                    <button
+                                        type="button"
+                                        onClick={handlePause}
+                                        aria-label="暂停测试"
+                                        title="暂停测试"
+                                        className="p-1.5 rounded-full text-yellow-600 bg-yellow-100 hover:bg-yellow-200 dark:bg-yellow-900/50 dark:text-yellow-300 dark:hover:bg-yellow-800/50 transition-colors"
+                                    >
+                                        <Pause className="w-4 h-4" />
+                                    </button>
+                                )}
+                                <button
+                                    type="button"
+                                    onClick={handleStopScan}
+                                    disabled={isStopping}
+                                    aria-label="停止测试"
+                                    title="停止测试"
+                                    className="p-1.5 rounded-full text-red-600 bg-red-100 hover:bg-red-200 dark:bg-red-900/50 dark:text-red-300 dark:hover:bg-red-800/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                    <Square className="w-4 h-4" />
+                                </button>
+                            </div>
+                        </div>
+                        <div className="w-full flex h-2.5 rounded-full overflow-hidden bg-gray-200 dark:bg-gray-700">
+                            <div className="bg-green-500 h-2.5 transition-all duration-300" style={{ width: `${total > 0 ? (successCount / total) * 100 : 0}%` }}></div>
+                            <div className="bg-red-500 h-2.5 transition-all duration-300" style={{ width: `${total > 0 ? (failCount / total) * 100 : 0}%` }}></div>
+                        </div>
+                        <div className="flex justify-between text-sm mt-1">
+                            <span className="text-green-600">成功: {successCount}</span>
+                            <span className="text-gray-500 dark:text-gray-400">已用: {fmt(elapsedSec)}</span>
+                            <span className="text-red-600">失败: {failCount}</span>
+                        </div>
                     </div>
-                    <div className="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700">
-                        <div className="bg-purple-600 h-2.5 rounded-full" style={{ width: `${total > 0 ? (progress / total) * 100 : 0}%` }}></div>
-                    </div>
-                    <div className="flex justify-between text-sm mt-1">
-                        <span className="text-green-600">成功: {successCount}</span>
-                        <span className="text-red-600">失败: {failCount}</span>
-                    </div>
-                </div>
-            )}
+                );
+            })()}
         </div >
     );
 }

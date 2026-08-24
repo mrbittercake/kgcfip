@@ -1,12 +1,16 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Globe, Save } from 'lucide-react';
 import { useToast } from './Toast';
 import { getThirdPartySources, saveThirdPartySources } from '../api';
+
+const LINE_HEIGHT = 24;
 
 export function ThirdPartySource() {
     const [urls, setUrls] = useState('');
     const [loading, setLoading] = useState(false);
     const [isSaving, setIsSaving] = useState(false);
+    const [scrollTop, setScrollTop] = useState(0);
+    const taRef = useRef<HTMLTextAreaElement>(null);
     const { showToast } = useToast();
 
     useEffect(() => {
@@ -33,7 +37,7 @@ export function ThirdPartySource() {
             const urlList = urls.split('\n')
                 .map(url => url.trim())
                 .filter(url => url !== '');
-            
+
             await saveThirdPartySources(urlList);
             showToast('第三方源保存成功', 'success');
         } catch (error) {
@@ -43,6 +47,9 @@ export function ThirdPartySource() {
             setIsSaving(false);
         }
     };
+
+    // 行数 = 内容行数（至少 1 行，保证空内容也有一行阴影）
+    const lineCount = Math.max(urls.split('\n').length, 1);
 
     return (
         <div className="bg-white dark:bg-gray-800 shadow-md rounded-lg p-6 mb-8">
@@ -60,13 +67,48 @@ export function ThirdPartySource() {
                     {isSaving ? '保存中...' : '保存'}
                 </button>
             </div>
-            <textarea
-                value={urls}
-                onChange={(e) => setUrls(e.target.value)}
-                placeholder="请输入接口地址，例如：&#10;https://api.example.com/ips&#10;https://other.source/list"
-                className="w-full h-32 p-3 border rounded-md dark:bg-gray-700 dark:border-gray-600 dark:text-white focus:ring-2 focus:ring-indigo-500 outline-none font-mono text-sm resize-none transition-colors"
-                disabled={loading || isSaving}
-            />
+            <div className="line-editor flex rounded-md border dark:border-gray-600 overflow-hidden font-mono text-sm" style={{ height: 10 * LINE_HEIGHT + 8 }}>
+                <div
+                    className="gutter flex-none select-none text-right text-gray-400 dark:text-gray-500 bg-gray-50 dark:bg-gray-900/40 border-r dark:border-gray-600 pb-2 px-2 overflow-hidden"
+                    aria-hidden
+                >
+                    <div style={{ transform: `translateY(${-scrollTop}px)` }}>
+                        {Array.from({ length: lineCount }, (_, i) => (
+                            <div key={i} style={{ height: LINE_HEIGHT, lineHeight: `${LINE_HEIGHT}px` }}>
+                                {i + 1}
+                            </div>
+                        ))}
+                    </div>
+                </div>
+                <div className="editor-area relative flex-1 overflow-hidden">
+                    <div
+                        className="line-shades absolute pointer-events-none"
+                        aria-hidden
+                        style={{ top: 0, left: 0, right: 0, bottom: 0, transform: `translateY(${-scrollTop}px)` }}
+                    >
+                        {Array.from({ length: lineCount }, (_, i) => (
+                            <div
+                                key={i}
+                                className="shade-line"
+                                style={{
+                                    height: LINE_HEIGHT,
+                                    background: i % 2 === 0 ? 'rgba(99,102,241,0.06)' : 'transparent',
+                                }}
+                            />
+                        ))}
+                    </div>
+                    <textarea
+                        ref={taRef}
+                        value={urls}
+                        onChange={(e) => setUrls(e.target.value)}
+                        onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+                        placeholder="请输入接口地址，例如：&#10;https://api.example.com/ips&#10;https://other.source/list"
+                        className="relative w-full h-full pb-2 pl-3 pr-3 border-0 bg-transparent dark:text-white focus:ring-2 focus:ring-indigo-500 outline-none resize-none overflow-auto transition-colors"
+                        style={{ lineHeight: `${LINE_HEIGHT}px` }}
+                        disabled={loading || isSaving}
+                    />
+                </div>
+            </div>
         </div>
     );
 }

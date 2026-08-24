@@ -239,29 +239,48 @@ export function SavedIpList() {
                     </div>
                 </div>
 
-                <div className="flex flex-col gap-3 p-3 bg-gray-50 dark:bg-gray-700 rounded-lg">
-                    <div className="flex items-start gap-2">
-                        <span className="text-sm font-medium text-gray-700 dark:text-gray-300 mt-1 whitespace-nowrap">场景过滤:</span>
-                        <div className="flex flex-wrap gap-2">
-                            {uniqueScenes.map(scene => (
-                                <label key={scene} className={`inline-flex items-center space-x-1 px-2 py-1 rounded border cursor-pointer select-none transition-colors ${selectedScenes.has(scene) ? 'bg-blue-100 border-blue-300 dark:bg-blue-900 dark:border-blue-700' : 'bg-white dark:bg-gray-600 border-gray-200 dark:border-gray-500 hover:bg-gray-50 dark:hover:bg-gray-500'}`}>
-                                    <input
-                                        type="checkbox"
-                                        checked={selectedScenes.has(scene)}
-                                        onChange={(e) => {
-                                            const newSet = new Set(selectedScenes);
-                                            if (e.target.checked) newSet.add(scene);
-                                            else newSet.delete(scene);
-                                            setSelectedScenes(newSet);
-                                        }}
-                                        className="rounded text-blue-600 focus:ring-blue-500 h-3 w-3"
-                                    />
-                                    <span className="text-xs text-gray-700 dark:text-gray-200">{scene}</span>
-                                </label>
-                            ))}
+                <div className="flex flex-wrap items-center gap-3 p-3 bg-gray-50 dark:bg-gray-700 rounded-lg">
+                    <span className="text-sm font-medium text-gray-700 dark:text-gray-300 whitespace-nowrap">场景过滤:</span>
+                    <div className="flex flex-wrap items-center gap-2">
+                        {uniqueScenes.map(scene => {
+                            const isSelected = selectedScenes.has(scene);
+                            return (
+                                <button
+                                    key={scene}
+                                    type="button"
+                                    onClick={() => {
+                                        const newSet = new Set(selectedScenes);
+                                        if (newSet.has(scene)) newSet.delete(scene);
+                                        else newSet.add(scene);
+                                        setSelectedScenes(newSet);
+                                    }}
+                                    className={`px-2.5 py-1 text-xs font-medium rounded-full border transition-colors ${
+                                        isSelected
+                                            ? 'bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-100 dark:bg-indigo-900/40 dark:text-indigo-200 dark:border-indigo-700/60 dark:hover:bg-indigo-800/60'
+                                            : 'bg-gray-100 text-gray-500 border-gray-200 dark:bg-gray-700 dark:text-gray-400 dark:border-gray-600'
+                                    }`}
+                                >
+                                        {scene}
+                                    </button>
+                                );
+                            })}
                         </div>
-                    </div>
-
+                        <div className="flex items-center gap-3 ml-auto">
+                            <button
+                                type="button"
+                                onClick={() => setSelectedScenes(new Set(uniqueScenes))}
+                                className="px-3 py-1 text-xs font-medium text-blue-800 bg-blue-100 rounded-full hover:bg-blue-200 dark:bg-blue-900 dark:text-blue-300 dark:hover:bg-blue-800 transition-colors"
+                            >
+                                全选
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setSelectedScenes(new Set())}
+                                className="px-3 py-1 text-xs font-medium text-gray-800 bg-gray-100 rounded-full hover:bg-gray-200 dark:bg-gray-600 dark:text-gray-300 dark:hover:bg-gray-500 transition-colors"
+                            >
+                                清空
+                            </button>
+                        </div>
                 </div>
             </div>
 

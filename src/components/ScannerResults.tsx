@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { saveResults } from '../api';
+import { useState, useEffect, useRef } from 'react';
+import { saveResults, getScenes } from '../api';
 import {
   ScanResult,
   getLatencyColor,
@@ -24,11 +24,54 @@ export function ScannerResults({ scanResults, onSaveSuccess }: IpScannerResultsA
     const [latencyFilterError, setLatencyFilterError] = useState<string>('');
     const [isSaving, setIsSaving] = useState(false);
     const [sceneName, setSceneName] = useState('');
+    const [scenes, setScenes] = useState<string[]>([]);
+    const [sceneDropdownOpen, setSceneDropdownOpen] = useState(false);
+    const sceneInputRef = useRef<HTMLDivElement>(null);
     const [saveMode, setSaveMode] = useState<'overwrite' | 'append'>('overwrite');
-    const [unselectedRegions, setUnselectedRegions] = useState<Set<string>>(new Set());
+    const [selectedRegions, setSelectedRegions] = useState<Set<string>>(new Set());
+    const [selectedPorts, setSelectedPorts] = useState<Set<string>>(new Set());
+    const filterInitialized = useRef(false);
 
     const uniqueRegions: string[] = Array.from(new Set(scanResults.map(r => r.colo))).filter((r): r is string => !!r).sort();
-  
+    const uniquePorts: number[] = Array.from(new Set(scanResults.map(r => r.port))).sort((a, b) => a - b);
+
+    // 结果首次就绪时，默认将全部地区/端口选入集合（真正全选，而非空集代表全选）
+    useEffect(() => {
+        if (!filterInitialized.current && uniqueRegions.length > 0) {
+            setSelectedRegions(new Set(uniqueRegions));
+            setSelectedPorts(new Set(uniquePorts.map(String)));
+            filterInitialized.current = true;
+        }
+    }, [uniqueRegions, uniquePorts]);
+
+    // 加载已保存场景名列表，供场景录入框快速选择
+    useEffect(() => {
+        const load = async () => {
+            try {
+                const data = await getScenes();
+                setScenes(data.map((s) => s.name));
+            } catch {
+                // 加载失败不影响录入
+            }
+        };
+        load();
+    }, []);
+
+    // 点击下拉外部时关闭场景选择浮层
+    useEffect(() => {
+        if (!sceneDropdownOpen) return;
+        const handler = (e: MouseEvent) => {
+            if (sceneInputRef.current && !sceneInputRef.current.contains(e.target as Node)) {
+                setSceneDropdownOpen(false);
+            }
+        };
+        document.addEventListener('mousedown', handler);
+        return () => document.removeEventListener('mousedown', handler);
+    }, [sceneDropdownOpen]);
+
+    // 已保存场景列表，不进行过滤，全部展示为标签
+    const sceneOptions = scenes;
+
     const latencyTrim = latencyFilterValue.trim();
     const isLatencyFormatValid = /^\d+$/.test(latencyTrim);
     const effectiveLatencyValue = isLatencyFormatValid ? parseInt(latencyTrim, 10) : 0;
@@ -38,18 +81,31 @@ export function ScannerResults({ scanResults, onSaveSuccess }: IpScannerResultsA
     const effectiveIpsPerRegion = isIpsPerRegionFormatValid ? parseInt(ipsPerRegionTrim, 10) : DEFAULT_IPS_PER_REGION;
 
     const baseFilteredResults = scanResults.filter(r => isLatencyFilterEnabled
-        ? (isLatencyFormatValid && r.latency > -1 && r.latency < effectiveLatencyValue)
+        ? (isLatencyFormatValid && r.latency > -1 && r.latency <= effectiveLatencyValue)
         : true
     );
-  
-  const regionCounts = baseFilteredResults.reduce((acc, r) => {
+
+    const portCounts = baseFilteredResults.reduce((acc, r) => {
+        const key = String(r.port);
+        acc[key] = (acc[key] || 0) + 1;
+        return acc;
+    }, {} as Record<string, number>);
+
+    // 按端口筛选：仅保留 selectedPorts 中的端口
+    const portFilteredResults = baseFilteredResults.filter(r =>
+        selectedPorts.has(String(r.port))
+    );
+
+  const regionCounts = portFilteredResults.reduce((acc, r) => {
         if (r.colo) {
             acc[r.colo] = (acc[r.colo] || 0) + 1;
         }
         return acc;
     }, {} as Record<string, number>);
 
-    const filteredResults = baseFilteredResults.filter(r => !r.colo || !unselectedRegions.has(r.colo));
+    const filteredResults = portFilteredResults.filter(r =>
+        r.colo ? selectedRegions.has(r.colo) : true
+    );
 
     let limitedResults = [...filteredResults];
     if (isRegionLimitEnabled) {
@@ -116,7 +172,7 @@ export function ScannerResults({ scanResults, onSaveSuccess }: IpScannerResultsA
                                         }}
                                         className="h-4 w-4 rounded border-gray-300 text-purple-600 focus:ring-purple-500"
                                     />
-                                    <label htmlFor="latency-filter-enable" className="text-sm text-gray-600 dark:text-gray-300 cursor-pointer select-none">延迟 &lt;</label>
+                                    <label htmlFor="latency-filter-enable" className="text-sm text-gray-600 dark:text-gray-300 cursor-pointer select-none">延迟 ≤</label>
                                 </div>                                
                                  <div className="flex items-center gap-2">
                                     <input
@@ -145,7 +201,7 @@ export function ScannerResults({ scanResults, onSaveSuccess }: IpScannerResultsA
                                         }}
                                         className="h-4 w-4 rounded border-gray-300 text-purple-600 focus:ring-purple-500"
                                     />
-                                    <label htmlFor="region-limit-enable" className="text-sm text-gray-600 dark:text-gray-300 cursor-pointer select-none">地区IP &lt;=</label>
+                                    <label htmlFor="region-limit-enable" className="text-sm text-gray-600 dark:text-gray-300 cursor-pointer select-none">每个地区保留</label>
                                 </div>
                                 <div className="flex items-center gap-2">
                                     <input
@@ -156,6 +212,7 @@ export function ScannerResults({ scanResults, onSaveSuccess }: IpScannerResultsA
                                         className="p-1 border rounded-md w-20 text-sm dark:bg-gray-600 dark:border-gray-500 dark:text-white disabled:bg-gray-200 dark:disabled:bg-gray-800"
                                         disabled={!isRegionLimitEnabled}
                                     />
+                                    <span className="text-sm text-gray-600 dark:text-gray-300">个</span>
                                     {ipsPerRegionError && <span className="text-red-500 text-xs">{ipsPerRegionError}</span>}
                                 </div>
                             </div>
@@ -165,13 +222,13 @@ export function ScannerResults({ scanResults, onSaveSuccess }: IpScannerResultsA
                             <h3 className="text-sm font-bold text-gray-700 dark:text-gray-200">按地区筛选</h3>
                             <div className="flex items-center gap-3">
                                 <button 
-                                    onClick={() => setUnselectedRegions(new Set())}
+                                    onClick={() => setSelectedRegions(new Set(uniqueRegions))}
                                     className="px-3 py-1 text-xs font-medium text-blue-800 bg-blue-100 rounded-full hover:bg-blue-200 dark:bg-blue-900 dark:text-blue-300 dark:hover:bg-blue-800 transition-colors"
                                 >
                                     全选
                                 </button>
                                 <button 
-                                    onClick={() => setUnselectedRegions(new Set(uniqueRegions))}
+                                    onClick={() => setSelectedRegions(new Set())}
                                     className="px-3 py-1 text-xs font-medium text-gray-800 bg-gray-100 rounded-full hover:bg-gray-200 dark:bg-gray-600 dark:text-gray-300 dark:hover:bg-gray-500 transition-colors"
                                 >
                                     清空
@@ -182,24 +239,74 @@ export function ScannerResults({ scanResults, onSaveSuccess }: IpScannerResultsA
                             {uniqueRegions.map(region => {
                                 const countForRegion = regionCounts[region] || 0;
                                 const displayCount = isRegionLimitEnabled ? Math.min(countForRegion, effectiveIpsPerRegion) : countForRegion;
+                                const isSelected = selectedRegions.has(region);
                                 return (
-                                    <label key={region} className="inline-flex items-center space-x-1 text-xs text-gray-700 dark:text-gray-200 bg-white dark:bg-gray-600 px-2 py-1 rounded border border-gray-200 dark:border-gray-500 cursor-pointer select-none hover:bg-gray-50 dark:hover:bg-gray-500 transition-colors">
-                                        <input
-                                            type="checkbox"
-                                            checked={!unselectedRegions.has(region)}
-                                            onChange={(e) => {
-                                                const newSet = new Set(unselectedRegions);
-                                                if (e.target.checked) {
-                                                    newSet.delete(region);
-                                                } else {
-                                                    newSet.add(region);
-                                                }
-                                                setUnselectedRegions(newSet);
-                                            }}
-                                            className="rounded text-purple-600 focus:ring-purple-500 h-3 w-3"
-                                        />
+                                    <button
+                                        key={region}
+                                        type="button"
+                                        onClick={() => {
+                                            const newSet = new Set(selectedRegions);
+                                            if (newSet.has(region)) {
+                                                newSet.delete(region);
+                                            } else {
+                                                newSet.add(region);
+                                            }
+                                            setSelectedRegions(newSet);
+                                        }}
+                                        className={`px-2.5 py-1 text-xs font-medium rounded-full border transition-colors ${
+                                            isSelected
+                                                ? 'bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-100 dark:bg-indigo-900/40 dark:text-indigo-200 dark:border-indigo-700/60 dark:hover:bg-indigo-800/60'
+                                                : 'bg-gray-100 text-gray-500 border-gray-200 dark:bg-gray-700 dark:text-gray-400 dark:border-gray-600'
+                                        }`}
+                                    >
                                         <RegionDisplay colo={region} flagSize="xs" /> <span>({displayCount})</span>
-                                    </label>
+                                    </button>
+                                );
+                            })}
+                        </div>
+
+                        <div className="flex items-center justify-between mb-2 mt-4">
+                            <h3 className="text-sm font-bold text-gray-700 dark:text-gray-200">按端口筛选</h3>
+                            <div className="flex items-center gap-3">
+                                <button
+                                    onClick={() => setSelectedPorts(new Set(uniquePorts.map(String)))}
+                                    className="px-3 py-1 text-xs font-medium text-blue-800 bg-blue-100 rounded-full hover:bg-blue-200 dark:bg-blue-900 dark:text-blue-300 dark:hover:bg-blue-800 transition-colors"
+                                >
+                                    全选
+                                </button>
+                                <button
+                                    onClick={() => setSelectedPorts(new Set())}
+                                    className="px-3 py-1 text-xs font-medium text-gray-800 bg-gray-100 rounded-full hover:bg-gray-200 dark:bg-gray-600 dark:text-gray-300 dark:hover:bg-gray-500 transition-colors"
+                                >
+                                    清空
+                                </button>
+                            </div>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                            {uniquePorts.map((port) => {
+                                const portStr = String(port);
+                                const isSelected = selectedPorts.has(portStr);
+                                return (
+                                    <button
+                                        key={port}
+                                        type="button"
+                                        onClick={() => {
+                                            const newSet = new Set(selectedPorts);
+                                            if (newSet.has(portStr)) {
+                                                newSet.delete(portStr);
+                                            } else {
+                                                newSet.add(portStr);
+                                            }
+                                            setSelectedPorts(newSet);
+                                        }}
+                                        className={`px-2.5 py-1 text-xs font-medium rounded-full border transition-colors ${
+                                            isSelected
+                                                ? 'bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-100 dark:bg-indigo-900/40 dark:text-indigo-200 dark:border-indigo-700/60 dark:hover:bg-indigo-800/60'
+                                                : 'bg-gray-100 text-gray-500 border-gray-200 dark:bg-gray-700 dark:text-gray-400 dark:border-gray-600'
+                                        }`}
+                                    >
+                                        {port} <span className="opacity-60">({portCounts[portStr] || 0})</span>
+                                    </button>
                                 );
                             })}
                         </div>
@@ -233,18 +340,47 @@ export function ScannerResults({ scanResults, onSaveSuccess }: IpScannerResultsA
                 <div className="mt-6 p-4 bg-gray-50 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600">
                     <div className="flex items-center gap-3 mb-4">
                         <h3 className="text-lg font-semibold text-gray-700 dark:text-gray-200">保存结果</h3>
-                        <span className="px-2.5 py-0.5 bg-green-100 text-green-800 text-sm font-semibold rounded-full dark:bg-green-900 dark:text-green-300">{limitedResults.length} 个IP/域名</span>
+                        <span className="px-2.5 py-0.5 bg-green-100 text-green-800 text-sm font-semibold rounded-full dark:bg-green-900 dark:text-green-300">IP {limitedResults.filter(r => !r.domain).length} 个</span>
+                        <span className="px-2.5 py-0.5 bg-indigo-100 text-indigo-800 text-sm font-semibold rounded-full dark:bg-indigo-900 dark:text-indigo-300">域名 {limitedResults.filter(r => r.domain).length} 个</span>
                     </div>
                     <div className="flex flex-wrap items-center gap-4">
-                        <div>
+                        <div className="relative" ref={sceneInputRef}>
                             <input 
                                 id="scene-name"
                                 type="text" 
                                 value={sceneName}
-                                onChange={(e) => setSceneName(e.target.value)}
+                                onChange={(e) => {
+                                    const v = e.target.value;
+                                    setSceneName(v);
+                                    // 自行输入内容后隐藏下拉，清空则重新展开
+                                    setSceneDropdownOpen(v.trim() === '');
+                                }}
+                                onFocus={() => setSceneDropdownOpen(true)}
                                 placeholder="场景名称，例如: 家庭电信"
                                 className="p-2 border rounded-md w-64 dark:bg-gray-600 dark:border-gray-500 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none"
                             />
+                            {sceneDropdownOpen && (
+                                <div className="absolute z-30 mt-1 w-64 max-h-56 overflow-auto rounded-md border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 shadow-lg p-2">
+                                    {sceneOptions.length > 0 ? (
+                                        <div className="flex flex-wrap gap-1.5">
+                                            {sceneOptions.map((name) => (
+                                                <button
+                                                    key={name}
+                                                    type="button"
+                                                    onClick={() => { setSceneName(name); setSceneDropdownOpen(false); }}
+                                                    className="px-2.5 py-1 text-xs font-medium rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200 hover:bg-indigo-100 hover:border-indigo-300 dark:bg-indigo-900/40 dark:text-indigo-200 dark:border-indigo-700/60 dark:hover:bg-indigo-800/60 transition-colors"
+                                                >
+                                                    {name}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    ) : (
+                                        <div className="px-1 py-2 text-xs text-gray-400 dark:text-gray-500">
+                                            暂无已保存场景
+                                        </div>
+                                    )}
+                                </div>
+                            )}
                         </div>
                         
                         <div className="relative flex w-fit items-center rounded-lg bg-gray-100 p-1 dark:bg-gray-700 border border-gray-200 dark:border-gray-600">
