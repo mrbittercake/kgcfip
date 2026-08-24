@@ -19,7 +19,7 @@ export interface ThirdPartyData {
     total: number;
     ipCount: number; // 去重后的 IP 条目数
     domainCount: number; // 去重后的域名条目数
-    sources: { url: string; count: number; ipCount: number; domainCount: number }[];
+    sources: { url: string; count: number; ipCount: number; domainCount: number; status?: string; error?: string }[];
     ips: ThirdPartyIpItem[];
 }
 

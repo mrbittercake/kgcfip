@@ -23,8 +23,10 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
         return new Response('[]', { headers: { 'Content-Type': 'application/json' } });
     }
 
-    // 2. 并发请求所有源地址
-    const fetchPromises = sources.map(async (srcUrl) => {
+    // 2. 分批并发请求所有源地址（规避 Cloudflare 对单次调用的并发子请求限制，约 50 个）
+    const CONCURRENCY = 20;
+
+    async function fetchOne(srcUrl: string): Promise<{ url: string; status: string; code?: number; error?: string; text?: string }> {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 15000); // 15秒超时
 
@@ -41,7 +43,7 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
             });
 
             if (!r.ok) {
-                 return { url: srcUrl, status: 'error', code: r.status, error: `Status ${r.status}` };
+                return { url: srcUrl, status: 'error', code: r.status, error: `Status ${r.status}` };
             }
             const text = await r.text();
             return { url: srcUrl, status: 'ok', text };
@@ -53,11 +55,16 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
         } finally {
             clearTimeout(timeoutId);
         }
-    });
+    }
 
-    const results = await Promise.all(fetchPromises);
+    const results: { url: string; status: string; code?: number; error?: string; text?: string }[] = [];
+    for (let i = 0; i < sources.length; i += CONCURRENCY) {
+        const batch = sources.slice(i, i + CONCURRENCY);
+        const batchResults = await Promise.all(batch.map((srcUrl) => fetchOne(srcUrl)));
+        results.push(...batchResults);
+    }
     const allIps = new Map<string, { ip: string; port: number }>();
-    const sourceStats: { url: string; count: number; ipCount: number; domainCount: number }[] = [];
+    const sourceStats: { url: string; count: number; ipCount: number; domainCount: number; status?: string; error?: string }[] = [];
 
     // 3. 解析结果
     results.forEach(result => {
@@ -108,7 +115,14 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
                 else srcIpCount++;
             }
         }
-        sourceStats.push({ url: result.url, count, ipCount: srcIpCount, domainCount: srcDomainCount });
+        sourceStats.push({
+            url: result.url,
+            count,
+            ipCount: srcIpCount,
+            domainCount: srcDomainCount,
+            status: result.status,
+            error: result.status === 'error' ? result.error : undefined
+        });
     });
 
     const finalIps = Array.from(allIps.values());

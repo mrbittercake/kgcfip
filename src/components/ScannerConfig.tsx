@@ -428,11 +428,15 @@ export function ScannerConfig({ cfIps, onScanComplete }: IpScannerConfigAndContr
                                             域名 {stat.domainCount}
                                         </span>
                                     )}
-                                    {stat.ipCount === 0 && stat.domainCount === 0 && (
-                                        <span className="px-2 py-0.5 rounded-full font-bold shadow-sm bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400">
+                                    {stat.status === 'error' ? (
+                                        <span className="px-2 py-0.5 rounded-full font-bold shadow-sm bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400" title={stat.error || '请求失败'}>
+                                            失败
+                                        </span>
+                                    ) : stat.ipCount === 0 && stat.domainCount === 0 ? (
+                                        <span className="px-2 py-0.5 rounded-full font-bold shadow-sm bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400" title="该源未返回有效条目">
                                             未解析出
                                         </span>
-                                    )}
+                                    ) : null}
                                 </span>
                             </div>
                         ))}
