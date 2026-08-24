@@ -15,6 +15,16 @@ export interface ThirdPartyIpItem {
     port: number;
 }
 
+export interface ThirdPartySourceStat {
+    url: string;
+    count: number;
+    ipCount: number;
+    domainCount: number;
+    status: string;
+    error?: string;
+    ips: ThirdPartyIpItem[];
+}
+
 export interface ThirdPartyData {
     total: number;
     ipCount: number; // 去重后的 IP 条目数
@@ -148,7 +158,93 @@ export async function saveThirdPartySources(sources: string[]): Promise<void> {
     return handleResponse<void>(response);
 }
 
-export async function getThirdPartyIps(): Promise<ThirdPartyData> {
-    // 添加时间戳防止缓存
-    return handleResponse<ThirdPartyData>(await authedFetch(`/api/third_party_ips?t=${Date.now()}`));
+// 获取已配置的第三方源列表（不发起 fetch，避免 CF 子请求上限）
+export async function getThirdPartySourceList(): Promise<string[]> {
+    return handleResponse<string[]>(await authedFetch(`/api/third_party_ips?t=${Date.now()}`));
+}
+
+// 获取单个源的解析结果（每次调用只发 1 个子请求）
+export async function getThirdPartySourceIps(srcUrl: string): Promise<ThirdPartySourceStat> {
+    return handleResponse<ThirdPartySourceStat>(await authedFetch(`/api/third_party_ips?url=${encodeURIComponent(srcUrl)}&t=${Date.now()}`));
+}
+
+export interface ThirdPartyProgress {
+    done: number;          // 已完成的源数量
+    total: number;         // 源总数
+    stat: ThirdPartySourceStat;                    // 刚完成的这个源
+    accumulatedStats: ThirdPartyData['sources'];   // 已完成源的统计累计
+    accumulatedIps: ThirdPartyIpItem[];            // 已完成源的条目累计（未去重）
+}
+
+/**
+ * 逐源拉取并合并第三方 IP/域名。
+ * 每个源单独请求后端（每次仅 1 个 CF 子请求），从而绕过 Cloudflare
+ * 单次调用 50 个子请求的硬上限，支持任意数量的源。
+ * onSourceProgress 在每完成一个源时回调，便于前端实时展示解析进度。
+ */
+export async function getThirdPartyIps(
+    onSourceProgress?: (p: ThirdPartyProgress) => void
+): Promise<ThirdPartyData> {
+    const sources = await getThirdPartySourceList();
+    if (!Array.isArray(sources) || sources.length === 0) {
+        return { total: 0, ipCount: 0, domainCount: 0, sources: [], ips: [] };
+    }
+
+    const allIps = new Map<string, ThirdPartyIpItem>();
+    const sourceStats: ThirdPartyData['sources'] = [];
+    const accumulatedIps: ThirdPartyIpItem[] = [];
+    let grossIp = 0;
+    let grossDomain = 0;
+
+    // 逐个请求（非一次性 Promise.all），以便每完成一个就回调进度
+    for (let i = 0; i < sources.length; i++) {
+        const stat = await getThirdPartySourceIps(sources[i]);
+        for (const item of stat.ips) {
+            const key = `${item.ip}:${item.port}`;
+            allIps.set(key, item);
+            accumulatedIps.push(item);
+        }
+        const statSummary: ThirdPartyData['sources'][number] = {
+            url: stat.url,
+            count: stat.count,
+            ipCount: stat.ipCount,
+            domainCount: stat.domainCount,
+            status: stat.status,
+            error: stat.error
+        };
+        sourceStats.push(statSummary);
+        grossIp += stat.ipCount;
+        grossDomain += stat.domainCount;
+
+        if (onSourceProgress) {
+            onSourceProgress({
+                done: i + 1,
+                total: sources.length,
+                stat,
+                accumulatedStats: [...sourceStats],
+                accumulatedIps: [...accumulatedIps]
+            });
+        }
+    }
+
+    const finalIps = Array.from(allIps.values());
+    // 去重后重新统计 IP/域名（避免跨源重复导致的总数偏差）
+    let dedupIp = 0;
+    let dedupDomain = 0;
+    for (const item of finalIps) {
+        if (isDomainName(item.ip)) dedupDomain++;
+        else dedupIp++;
+    }
+
+    return {
+        total: finalIps.length,
+        ipCount: dedupIp,
+        domainCount: dedupDomain,
+        sources: sourceStats,
+        ips: finalIps
+    };
+}
+
+function isDomainName(host: string): boolean {
+    return !/^(?:\d{1,3}\.){3}\d{1,3}$/.test(host) && !host.includes(':');
 }

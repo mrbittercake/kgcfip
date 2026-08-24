@@ -1,5 +1,15 @@
 import { useState, useRef, useEffect } from 'react';
-import { CloudflareIps, getThirdPartyIps, ThirdPartyData } from '../api';
+import { CloudflareIps, getThirdPartySourceList, getThirdPartySourceIps } from '../api';
+
+type SourceRowStatus = 'pending' | 'loading' | 'done' | 'error';
+interface SourceRow {
+    url: string;
+    status: SourceRowStatus;
+    ipCount?: number;
+    domainCount?: number;
+    error?: string;
+    ips?: { ip: string; port: number }[];
+}
 import {
     generateRandomIps,
     BatchScanner,
@@ -23,7 +33,7 @@ export function ScannerConfig({ cfIps, onScanComplete }: IpScannerConfigAndContr
     const [count, setCount] = useState<string>('500');
     const [threads, setThreads] = useState<string>('8');
     const [latencyLimit, setLatencyLimit] = useState<string>('1000');
-    const [countError, setCountError] = useState<string>('');
+/*  */    const [countError, setCountError] = useState<string>('');
     const [threadsError, setThreadsError] = useState<string>('');
     const [latencyLimitError, setLatencyLimitError] = useState<string>('');
     const [selectedPort, setSelectedPort] = useState(443);
@@ -34,12 +44,14 @@ export function ScannerConfig({ cfIps, onScanComplete }: IpScannerConfigAndContr
     const [successCount, setSuccessCount] = useState(0);
     const [failCount, setFailCount] = useState(0);
     const [isStopping, setIsStopping] = useState(false);
-    const [sourceStats, setSourceStats] = useState<ThirdPartyData['sources']>([]);
     const [uniqueIpCount, setUniqueIpCount] = useState(0);
     const [grossIpCount, setGrossIpCount] = useState(0);
     const [ipCount, setIpCount] = useState(0);
     const [domainCount, setDomainCount] = useState(0);
     const [isPreparing, setIsPreparing] = useState(false);
+    const [prepareDone, setPrepareDone] = useState(0);
+    const [prepareTotal, setPrepareTotal] = useState(0);
+    const [sourceRows, setSourceRows] = useState<SourceRow[]>([]);
     const [startTime, setStartTime] = useState<number | null>(null);
     const [now, setNow] = useState(Date.now());
     const [isPaused, setIsPaused] = useState(false);
@@ -109,7 +121,7 @@ export function ScannerConfig({ cfIps, onScanComplete }: IpScannerConfigAndContr
     };
 
     const prepareTargets = async (countNum: number): Promise<{ targets: string[]; resolvedMap?: Record<string, string | null> } | null> => {
-        setSourceStats([]);
+        setSourceRows([]);
         setUniqueIpCount(0);
         setGrossIpCount(0);
         setIpCount(0);
@@ -118,21 +130,82 @@ export function ScannerConfig({ cfIps, onScanComplete }: IpScannerConfigAndContr
         if (cancelPreparingRef.current) return null;
 
         if (ipSource === 'third') {
-            const data = await getThirdPartyIps();
+            setPrepareDone(0);
+            setPrepareTotal(0);
+
+            // 先取出完整源列表，立即以"等待中"渲染全部条目
+            const sources = await getThirdPartySourceList();
             if (cancelPreparingRef.current) return null;
-            if (!data || !data.ips || data.ips.length === 0) {
+            if (!Array.isArray(sources) || sources.length === 0) {
+                showToast('未配置第三方源，请先到"第三方IP/域名源"中添加', 'warning');
+                return null;
+            }
+
+            const rows: SourceRow[] = sources.map((url) => ({ url, status: 'pending' }));
+            setSourceRows(rows);
+            setPrepareTotal(sources.length);
+
+            // 逐源解析，实时更新对应条目的状态与结果
+            const allIps = new Map<string, { ip: string; port: number }>();
+            let grossCount = 0;
+            let doneCount = 0;
+
+            for (let i = 0; i < sources.length; i++) {
+                if (cancelPreparingRef.current) return null;
+                // 标记当前行为"解析中"
+                setSourceRows((prev) => prev.map((r, idx) => idx === i ? { ...r, status: 'loading' } : r));
+                setPrepareDone(i);
+
+                let stat;
+                try {
+                    stat = await getThirdPartySourceIps(sources[i]);
+                } catch (e) {
+                    stat = { url: sources[i], status: 'error', count: 0, ipCount: 0, domainCount: 0, ips: [], error: (e as Error).message };
+                }
+
+                // 更新当前行结果
+                setSourceRows((prev) => prev.map((r, idx) => idx === i ? {
+                    url: stat.url,
+                    status: stat.status === 'error' ? 'error' : 'done',
+                    ipCount: stat.ipCount,
+                    domainCount: stat.domainCount,
+                    error: stat.error,
+                    ips: stat.ips
+                } : r));
+                doneCount++;
+                setPrepareDone(doneCount);
+
+                if (stat.status !== 'error') {
+                    for (const item of stat.ips) {
+                        allIps.set(`${item.ip}:${item.port}`, item);
+                    }
+                }
+                grossCount += stat.count;
+            }
+
+            if (cancelPreparingRef.current) return null;
+
+            const finalIps = Array.from(allIps.values());
+            let dedupIp = 0;
+            let dedupDomain = 0;
+            for (const item of finalIps) {
+                if (isDomainName(item.ip)) dedupDomain++;
+                else dedupIp++;
+            }
+
+            setUniqueIpCount(finalIps.length);
+            setGrossIpCount(grossCount);
+            setIpCount(dedupIp);
+            setDomainCount(dedupDomain);
+
+            if (finalIps.length === 0) {
                 showToast('未能获取到第三方源IP，请检查配置或后台日志', 'warning');
                 return null;
             }
-            setSourceStats(data.sources);
-            setUniqueIpCount(data.total);
-            setGrossIpCount(data.sources.reduce((acc, s) => acc + s.count, 0));
-            setIpCount(data.ipCount ?? 0);
-            setDomainCount(data.domainCount ?? 0);
 
             const targets: string[] = [];
             const domainItems: { key: string; host: string }[] = [];
-            for (const item of data.ips) {
+            for (const item of finalIps) {
                 const key = `${item.ip}:${item.port}`;
                 targets.push(key);
                 // 收集域名源，前端用阿里云 DoH 解析出测速 IP
@@ -372,7 +445,13 @@ export function ScannerConfig({ cfIps, onScanComplete }: IpScannerConfigAndContr
             <div className="mb-4 flex justify-center" >
                 <button onClick={handleScan} disabled={isScanning || isPreparing} className="flex items-center bg-purple-600 text-white font-bold py-2 px-4 rounded-md hover:bg-purple-700 transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed">
                     {isPreparing ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Play className="w-4 h-4 mr-2" />}
-                    {isPreparing ? '准备中...' : isScanning ? `测试中... (${progress}/${total})` : '开始测试'}
+                    {isPreparing
+                        ? (ipSource === 'third' && prepareTotal > 0
+                            ? `解析源 ${prepareDone}/${prepareTotal}`
+                            : '准备中...')
+                        : isScanning
+                            ? `测试中... (${progress}/${total})`
+                            : '开始测试'}
                 </button>
                 {isPreparing && (
                     <button onClick={() => { cancelPreparingRef.current = true; setIsPreparing(false); }} style={{ marginLeft: "8px" }}
@@ -390,53 +469,65 @@ export function ScannerConfig({ cfIps, onScanComplete }: IpScannerConfigAndContr
                 )}
             </div >
 
-            {/* 准备中动画 */}
-            {isPreparing && (
-                <div className="mb-4 flex flex-col items-center justify-center p-6 bg-gray-50 dark:bg-gray-700/30 rounded-lg border border-dashed border-gray-300 dark:border-gray-600">
-                    <Loader2 className="w-8 h-8 text-purple-500 animate-spin mb-2" />
-                    <span className="text-sm font-medium text-gray-600 dark:text-gray-300">正在获取 IP 资源，请稍候...</span>
-                </div>
-            )}
-
-            {/* 第三方源统计展示区 */}
-            {ipSource === 'third' && sourceStats.length > 0 && (
+            {/* 第三方源逐条解析展示区 */}
+            {ipSource === 'third' && sourceRows.length > 0 && (
                 <div className="mb-4 bg-gray-50 dark:bg-gray-700/50 rounded-lg p-3 border border-gray-100 dark:border-gray-700">
-                    <h3 className="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">第三方IP/域名获取详情</h3>
-                    
-                    {/* 新增的总览信息 */}
-                    <div className="mb-3 text-sm text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-gray-800/50 p-2 rounded-md text-center">
-                        共发现 <strong className="text-blue-500 font-semibold">{grossIpCount}</strong> 个记录，
-                        去重后剩余 <strong className="text-purple-500 font-semibold">{uniqueIpCount}</strong> 个，
-                        其中 IP <strong className="text-green-500 font-semibold">{ipCount}</strong> 个、
-                        域名 <strong className="text-orange-500 font-semibold">{domainCount}</strong> 个。
-                    </div>
+                    <h3 className="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">
+                        第三方IP/域名获取详情 {isPreparing && `(${prepareDone}/${prepareTotal})`}
+                    </h3>
+
+                    {/* 解析完成后的总览信息 */}
+                    {!isPreparing && (
+                        <div className="mb-3 text-sm text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-gray-800/50 p-2 rounded-md text-center">
+                            共发现 <strong className="text-blue-500 font-semibold">{grossIpCount}</strong> 个记录，
+                            去重后剩余 <strong className="text-purple-500 font-semibold">{uniqueIpCount}</strong> 个，
+                            其中 IP <strong className="text-green-500 font-semibold">{ipCount}</strong> 个、
+                            域名 <strong className="text-orange-500 font-semibold">{domainCount}</strong> 个。
+                        </div>
+                    )}
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                        {sourceStats.map((stat, idx) => (
+                        {sourceRows.map((row, idx) => (
                             <div key={idx} className="flex items-center justify-between bg-white dark:bg-gray-800 p-2 rounded border border-gray-100 dark:border-gray-600 shadow-sm text-xs transition-colors hover:border-purple-200 dark:hover:border-purple-800">
-                                <div className="truncate flex-1 mr-2 text-gray-600 dark:text-gray-300 font-mono" title={stat.url}>
-                                    {stat.url.replace(/^https?:\/\//, '')}
+                                <div className="truncate flex-1 mr-2 text-gray-600 dark:text-gray-300 font-mono" title={row.url}>
+                                    {row.url.replace(/^https?:\/\//, '')}
                                 </div>
-                                <span className="flex items-center gap-1">
-                                    {stat.ipCount > 0 && (
-                                        <span className="px-2 py-0.5 rounded-full font-bold shadow-sm bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400" title="IP 个数">
-                                            IP {stat.ipCount}
+                                <span className="flex items-center gap-1 shrink-0">
+                                    {row.status === 'pending' && (
+                                        <span className="px-2 py-0.5 rounded-full font-bold shadow-sm bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400">
+                                            等待中
                                         </span>
                                     )}
-                                    {stat.domainCount > 0 && (
-                                        <span className="px-2 py-0.5 rounded-full font-bold shadow-sm bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400" title="域名个数">
-                                            域名 {stat.domainCount}
+                                    {row.status === 'loading' && (
+                                        <span className="flex items-center gap-1 px-2 py-0.5 rounded-full font-bold shadow-sm bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400">
+                                            <Loader2 className="w-3 h-3 animate-spin" />
+                                            解析中
                                         </span>
                                     )}
-                                    {stat.status === 'error' ? (
-                                        <span className="px-2 py-0.5 rounded-full font-bold shadow-sm bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400" title={stat.error || '请求失败'}>
+                                    {row.status === 'done' && (
+                                        <>
+                                            {row.ipCount! > 0 && (
+                                                <span className="px-2 py-0.5 rounded-full font-bold shadow-sm bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400" title="IP 个数">
+                                                    IP {row.ipCount}
+                                                </span>
+                                            )}
+                                            {row.domainCount! > 0 && (
+                                                <span className="px-2 py-0.5 rounded-full font-bold shadow-sm bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400" title="域名个数">
+                                                    域名 {row.domainCount}
+                                                </span>
+                                            )}
+                                            {row.ipCount === 0 && row.domainCount === 0 && (
+                                                <span className="px-2 py-0.5 rounded-full font-bold shadow-sm bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400" title="该源未返回有效条目">
+                                                    未解析出
+                                                </span>
+                                            )}
+                                        </>
+                                    )}
+                                    {row.status === 'error' && (
+                                        <span className="px-2 py-0.5 rounded-full font-bold shadow-sm bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400" title={row.error || '请求失败'}>
                                             失败
                                         </span>
-                                    ) : stat.ipCount === 0 && stat.domainCount === 0 ? (
-                                        <span className="px-2 py-0.5 rounded-full font-bold shadow-sm bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400" title="该源未返回有效条目">
-                                            未解析出
-                                        </span>
-                                    ) : null}
+                                    )}
                                 </span>
                             </div>
                         ))}
