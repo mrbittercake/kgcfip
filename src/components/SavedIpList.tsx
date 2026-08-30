@@ -130,7 +130,7 @@ export function SavedIpList() {
                 item.latency,
                 item.colo || '',
                 getColoName(item.colo || ''),
-                item.sceneName
+                item.sceneName,
             ].map(field => {
                 const stringField = String(field);
                 // Escape quotes and wrap in quotes if contains comma, quote or newline
@@ -192,7 +192,7 @@ export function SavedIpList() {
 
         let txtContent = '';
         for (const item of filteredItemsSorted) {
-            const regionName = getColoName(item.colo || '');
+            const regionName = getColoName(item.colo || '').replace(/^(\p{Regional_Indicator}+)\s+/u, '$1');
             const sceneName = item.sceneName;
             const latency = `${item.latency}ms`;
             const comment = `${regionName}|${sceneName}|${latency}`;

@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { CloudflareIps, getThirdPartySourceList, getThirdPartySourceIps } from '../api';
 
 type SourceRowStatus = 'pending' | 'loading' | 'done' | 'error';
@@ -17,9 +17,15 @@ import {
     CF_CIDR_LIST,
     isDomainName,
     resolveDomainToIp,
+    probeBrowserAvailable,
 } from '../utils/scanner';
+import {
+    probeLocalAgent, startAgentScan, fetchAgentProgress, stopAgentScan,
+    DEFAULT_AGENT_PORT,
+    type AgentResult, type AgentProbeResult,
+} from '../utils/localAgent';
 import { useToast } from './Toast';
-import { Gauge, Play, StopCircle, Loader2, Pause, Square } from 'lucide-react';
+import { Gauge, Play, StopCircle, Loader2, Pause, Square, Cpu, RefreshCw, AlertTriangle } from 'lucide-react';
 import { useConfirm } from './ConfirmDialog';
 
 interface IpScannerConfigAndControlProps {
@@ -61,6 +67,64 @@ export function ScannerConfig({ cfIps, onScanComplete }: IpScannerConfigAndContr
     const cancelPreparingRef = useRef(false);
     const { showToast } = useToast();
     const { confirm } = useConfirm();
+
+    // ---------- 测速方式切换 ----------
+    const [activeTab, setActiveTab] = useState<'browser' | 'local'>('browser');
+
+    // ---------- 本地 Agent ----------
+    const [agentProbe, setAgentProbe] = useState<AgentProbeResult | null>(null);
+    const [agentChecking, setAgentChecking] = useState(false);
+    // 本地服务端口：保存在浏览器本地，下次自动带出
+    const [agentPort, setAgentPort] = useState<string>(
+        () => localStorage.getItem('LOCAL_AGENT_PORT') || String(DEFAULT_AGENT_PORT)
+    );
+    const agentStopRef = useRef(false);
+    const agentModeRef = useRef(false);
+    // 当前这一轮是否走本地 Agent（需要触发重渲染以隐藏不支持的暂停按钮）
+    const [agentActive, setAgentActive] = useState(false);
+
+    /** 探测本机 127.0.0.1 上的 Agent 服务 */
+    const checkAgent = useCallback(async (port: number, silent = false) => {
+        setAgentChecking(true);
+        try {
+            const r = await probeLocalAgent(port);
+            setAgentProbe(r);
+            if (r.online && !silent) showToast('已连接到本地 Agent 服务', 'success');
+        } catch {
+            setAgentProbe({ online: false, reason: 'offline' });
+        } finally {
+            setAgentChecking(false);
+        }
+    }, [showToast]);
+
+    // 启动 & 端口变更：探测本地服务
+    useEffect(() => {
+        void checkAgent(Number(agentPort) || DEFAULT_AGENT_PORT, true);
+    }, [checkAgent, agentPort]);
+
+    // ---------- 浏览器端测速可用性自检 ----------
+    // 浏览器无法为任意 IP 设置 TLS SNI，只能依赖会失效的第三方泛解析域名；
+    // 此处用一次真实浏览器测速来验证当前环境是否可用，失败则提示切换到本地测速。
+    const [browserHealthy, setBrowserHealthy] = useState<boolean | null>(null);
+    const [browserChecking, setBrowserChecking] = useState(false);
+
+    const checkBrowser = useCallback(async () => {
+        setBrowserChecking(true);
+        setBrowserHealthy(null);
+        try {
+            const ok = await probeBrowserAvailable();
+            setBrowserHealthy(ok);
+        } catch {
+            setBrowserHealthy(false);
+        } finally {
+            setBrowserChecking(false);
+        }
+    }, []);
+
+    // 进入「浏览器测速」Tab 时做一次自检
+    useEffect(() => {
+        if (activeTab === 'browser') void checkBrowser();
+    }, [activeTab, checkBrowser]);
 
     const showLocationWarning = async () => {
         const result = await confirm('检测到您目前网络处于代理或VPN环境，请处于直连状态下再开始测试，否则结果没有意义！', {
@@ -234,6 +298,95 @@ export function ScannerConfig({ cfIps, onScanComplete }: IpScannerConfigAndContr
         return { targets: generateRandomIps(cidrsToUse, countNum) };
     };
 
+    // ---------- 本地 Agent 测速 ----------
+
+    /** Agent 结果 -> 页面统一的 ScanResult，从而复用原有的结果列表与保存逻辑 */
+    const toScanResult = (r: AgentResult): ScanResult => ({
+        ip: r.host,
+        port: r.port,
+        isAvailable: r.ok,
+        latency: r.ok ? r.latency : -1,
+        colo: r.colo || undefined,
+        domain: isDomainName(r.host) || undefined,
+        tcpMs: r.tcpMs >= 0 ? r.tcpMs : undefined,
+        tlsMs: r.tlsMs >= 0 ? r.tlsMs : undefined,
+        error: r.error || undefined,
+    });
+
+    /**
+     * 把页面已有的靶标字符串解析成 Agent 需要的 {host, ip, port}。
+     * 域名源用 DoH 已解析出的 IP 去连接，但 host 保留域名，与浏览器端行为一致。
+     */
+    const buildAgentTargets = (
+        rawTargets: string[],
+        resolvedMap?: Record<string, string | null>,
+        defaultPort = 443
+    ) => rawTargets.map((raw) => {
+        let host = raw;
+        let port = defaultPort;
+        const lastColon = raw.lastIndexOf(':');
+        const closeBracket = raw.lastIndexOf(']');
+        if (lastColon > -1 && lastColon > closeBracket) {
+            const p = parseInt(raw.substring(lastColon + 1), 10);
+            if (!isNaN(p)) {
+                port = p;
+                host = raw.substring(0, lastColon);
+                if (host.startsWith('[') && host.endsWith(']')) host = host.substring(1, host.length - 1);
+            }
+        }
+        if (port === 0) port = 443;
+        const ip = (resolvedMap && resolvedMap[raw]) || host;
+        return { host, ip, port };
+    });
+
+    /** 通过本地 Agent 执行测速：下发参数 -> 轮询进度 -> 汇总回传 */
+    const runAgentScan = async (
+        targets: { host: string; ip: string; port: number }[],
+        threadsNum: number,
+        latencyLimitNum: number,
+        onProgress: (r: ScanResult) => void,
+        onComplete: (rs: ScanResult[]) => void,
+    ) => {
+        if (!agentProbe?.online) throw new Error('本地 Agent 未连接');
+        const base = agentProbe.baseUrl;
+
+        await startAgentScan(base, {
+            targets,
+            threads: threadsNum,
+            timeoutMs: 2500,
+            latencyLimit: latencyLimitNum,
+            source: ipSource,
+        });
+
+        let since = 0;
+        let lastDone = -1;
+        let stallTicks = 0;
+        const acc: ScanResult[] = [];
+
+        while (!agentStopRef.current) {
+            const p = await fetchAgentProgress(base, since);
+            since += p.count;
+            for (const r of p.results) {
+                const sr = toScanResult(r);
+                acc.push(sr);
+                onProgress(sr);
+            }
+
+            if (!p.running) break;
+
+            // 卡死保护：连续 60 秒没有任何进展则放弃
+            if (p.done === lastDone) {
+                if (++stallTicks > 150) throw new Error('本地 Agent 长时间无进展，已放弃等待');
+            } else {
+                lastDone = p.done;
+                stallTicks = 0;
+            }
+            await new Promise((r) => setTimeout(r, 400));
+        }
+
+        onComplete(acc.filter((r) => r.isAvailable).sort((a, b) => a.latency - b.latency));
+    };
+
     const handleScan = async () => {
         cancelPreparingRef.current = false;
 
@@ -278,6 +431,8 @@ export function ScannerConfig({ cfIps, onScanComplete }: IpScannerConfigAndContr
             const onComplete = (finalResults: ScanResult[]) => {
                 setIsStopping(false);
                 setIsPaused(false);
+                setAgentActive(false);
+                agentModeRef.current = false;
                 if (scannerRef.current) {
                     scannerRef.current.stop();
                 }
@@ -286,23 +441,38 @@ export function ScannerConfig({ cfIps, onScanComplete }: IpScannerConfigAndContr
                 onScanComplete(finalResults);
             };
 
-            // Step 4: 启动扫描
+            // Step 4: 启动扫描（按当前 Tab 决定走本地 Agent 还是浏览器端）
             setIsPreparing(false);
             setIsScanning(true);
             setStartTime(Date.now());
             setNow(Date.now());
-            const scanner = new BatchScanner(
-                targets,
-                ipSource === 'third' ? 0 : selectedPort,
-                val.threadsNum,
-                val.latencyLimitNum,
-                onProgress,
-                onComplete,
-                prepared.resolvedMap,
-            );
-            scannerRef.current = scanner;
 
-            await scanner.run();
+            const agentReady = activeTab === 'local' && agentProbe?.online === true;
+            agentModeRef.current = agentReady;
+            agentStopRef.current = false;
+            setAgentActive(agentReady);
+
+            if (agentReady) {
+                const agentTargets = buildAgentTargets(
+                    targets,
+                    prepared.resolvedMap,
+                    ipSource === 'third' ? 0 : selectedPort,
+                );
+                await runAgentScan(agentTargets, val.threadsNum, val.latencyLimitNum, onProgress, onComplete);
+            } else {
+                const scanner = new BatchScanner(
+                    targets,
+                    ipSource === 'third' ? 0 : selectedPort,
+                    val.threadsNum,
+                    val.latencyLimitNum,
+                    onProgress,
+                    onComplete,
+                    prepared.resolvedMap,
+                );
+                scannerRef.current = scanner;
+
+                await scanner.run();
+            }
         } catch (error) {
             console.error('Scan failed:', error);
             setIsScanning(false);
@@ -317,6 +487,11 @@ export function ScannerConfig({ cfIps, onScanComplete }: IpScannerConfigAndContr
         setIsStopping(true);
         setIsPaused(false);
         setStartTime(null);
+        if (agentModeRef.current && agentProbe?.online) {
+            // 轮询循环会自行退出并触发 onComplete 收尾
+            agentStopRef.current = true;
+            void stopAgentScan(agentProbe.baseUrl);
+        }
         if (scannerRef.current) {
             scannerRef.current.stop();
         }
@@ -442,16 +617,152 @@ export function ScannerConfig({ cfIps, onScanComplete }: IpScannerConfigAndContr
                 </div>
 
             </div>
+
+            {/* ============ 测速方式：浏览器测速 / 本地测速 ============ */}
+            <div className="mb-4">
+                <div className="flex w-fit items-center rounded-lg bg-gray-100 p-1 dark:bg-gray-700 mb-3">
+                    <button
+                        onClick={() => setActiveTab('browser')}
+                        disabled={isScanning || isPreparing}
+                        className={`relative z-10 rounded-md px-4 py-1.5 text-sm font-medium transition-colors disabled:cursor-not-allowed ${
+                            activeTab === 'browser'
+                                ? 'bg-white text-gray-800 shadow-sm dark:bg-gray-900 dark:text-white'
+                                : 'text-gray-600 hover:text-gray-800 dark:text-gray-400 dark:hover:text-white'
+                        }`}
+                    >
+                        浏览器测速
+                    </button>
+                    <button
+                        onClick={() => setActiveTab('local')}
+                        disabled={isScanning || isPreparing}
+                        className={`relative z-10 rounded-md px-4 py-1.5 text-sm font-medium transition-colors disabled:cursor-not-allowed ${
+                            activeTab === 'local'
+                                ? 'bg-white text-gray-800 shadow-sm dark:bg-gray-900 dark:text-white'
+                                : 'text-gray-600 hover:text-gray-800 dark:text-gray-400 dark:hover:text-white'
+                        }`}
+                    >
+                        本地测速
+                    </button>
+                </div>
+
+                {activeTab === 'browser' ? (
+                    /* ---------- 浏览器测速面板 ---------- */
+                    <div className="space-y-3">
+                        {browserChecking && (
+                            <p className="text-sm text-gray-500 dark:text-gray-400">正在检测浏览器测速是否可用…</p>
+                        )}
+                        {!browserChecking && browserHealthy === true && (
+                            <p className="text-sm text-green-600 dark:text-green-400">
+                                浏览器测速可用，可直接点击「开始测试（浏览器）」。
+                            </p>
+                        )}
+                        {!browserChecking && browserHealthy === false && (
+                            <div className="flex items-start gap-2.5 rounded-lg border border-orange-200 dark:border-orange-700/50 bg-orange-50 dark:bg-orange-900/20 px-4 py-3">
+                                <AlertTriangle className="w-4 h-4 text-orange-500 flex-none mt-0.5" />
+                                <div className="text-sm text-orange-800 dark:text-orange-300">
+                                    <p>当前环境的浏览器测速不可用（测速地址无法解析或连接失败）。</p>
+                                    <p className="mt-1">
+                                        建议使用「本地测速」：在本机运行 Agent 后，页面参数会原样下发到本机执行，结果更稳定。
+                                        <button
+                                            onClick={() => setActiveTab('local')}
+                                            className="ml-1 inline-flex items-center gap-1 text-orange-700 dark:text-orange-200 font-medium underline underline-offset-2 hover:opacity-80"
+                                        >
+                                            切换到本地测速 →
+                                        </button>
+                                    </p>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                ) : (
+                    /* ---------- 本地 Agent 测速面板 ---------- */
+                    <div className={'rounded-lg border overflow-hidden ' + (agentProbe?.online ? 'border-green-500 dark:border-green-500' : 'border-red-500 dark:border-red-500')}>
+                        <div className="flex items-center justify-between gap-3 px-4 py-3 bg-gray-50 dark:bg-gray-900/40">
+                            <div className="flex items-center gap-2 min-w-0 flex-wrap">
+                                <Cpu className="w-5 h-5 text-teal-500 flex-none" />
+                                <span className="font-medium text-gray-700 dark:text-gray-200">本地 Agent 测速</span>
+                                {agentProbe === null && (
+                                    <span className="px-2 py-0.5 text-xs rounded-full bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-300">未检测</span>
+                                )}
+                                {agentProbe && !agentProbe.online && agentProbe.reason === 'offline' && (
+                                    <span className="px-2 py-0.5 text-xs rounded-full bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300">未启动</span>
+                                )}
+                                {agentProbe?.online && (
+                                    <span className="px-2 py-0.5 text-xs rounded-full bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300">
+                                        已连接 {agentProbe.baseUrl}
+                                        {agentProbe.status.running && agentProbe.status.task
+                                            ? ` · 忙（${agentProbe.status.task.done}/${agentProbe.status.task.total}）`
+                                            : ''}
+                                    </span>
+                                )}
+                            </div>
+
+                            <button
+                                onClick={() => void checkAgent(Number(agentPort) || DEFAULT_AGENT_PORT)}
+                                disabled={agentChecking || isScanning}
+                                className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-md bg-teal-600 text-white hover:bg-teal-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex-none"
+                            >
+                                <RefreshCw className={`w-3 h-3 ${agentChecking ? 'animate-spin' : ''}`} />
+                                {agentChecking ? '检测中' : '检测服务'}
+                            </button>
+                        </div>
+
+                        <div className="px-4 py-3">
+                            {/* 本地服务端口设置（保存在浏览器本地） */}
+                            <div className="flex items-center gap-2 mb-3">
+                                <label htmlFor="agent-port" className="text-xs text-gray-600 dark:text-gray-400 flex-none">本地服务端口</label>
+                                <input
+                                    id="agent-port"
+                                    type="text"
+                                    inputMode="numeric"
+                                    value={agentPort}
+                                    onChange={(e) => {
+                                        const v = e.target.value.replace(/[^\d]/g, '').slice(0, 5);
+                                        setAgentPort(v);
+                                        localStorage.setItem('LOCAL_AGENT_PORT', v);
+                                    }}
+                                    placeholder={String(DEFAULT_AGENT_PORT)}
+                                    className="w-24 px-2.5 py-1.5 text-xs font-mono rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-100 focus:ring-2 focus:ring-teal-500 focus:border-transparent outline-none disabled:opacity-50"
+                                    disabled={isScanning || agentChecking}
+                                />
+                                <span className="text-xs text-gray-400 dark:text-gray-500">默认 {DEFAULT_AGENT_PORT}</span>
+                            </div>
+
+                            {!agentProbe?.online && (
+                                <>
+                                    <p className="text-sm text-gray-600 dark:text-gray-300 mb-2">
+                                        本机 Agent 未运行，请按以下步骤启动：
+                                    </p>
+                                    <ol className="list-decimal list-inside space-y-1.5 text-sm text-gray-600 dark:text-gray-400 mb-3">
+                                        <li>
+                                            下载并解压 <a href="/local-agent.zip" download className="text-teal-600 dark:text-teal-400 hover:underline font-medium">local-agent.zip</a>（需先安装
+                                            <a href="https://nodejs.org/" target="_blank" rel="noreferrer" className="text-teal-600 dark:text-teal-400 hover:underline"> Node.js</a>，16 及以上版本）
+                                        </li>
+                                        <li>
+                                            进入解压后的文件夹，执行 <code className="px-1 rounded bg-gray-100 dark:bg-gray-700 text-xs">node agent.js</code>
+                                            （Windows 双击 <code className="px-1 rounded bg-gray-100 dark:bg-gray-700 text-xs">start.bat</code>即可启动）
+                                        </li>
+                                        <li>确认端口与本地 <code className="px-1 rounded bg-gray-100 dark:bg-gray-700 text-xs">config.json</code> 的 listenPort 一致，再点「检测服务」</li>
+                                    </ol>
+                                </>
+                            )}
+                        </div>
+                    </div>
+                )}
+            </div>
+
             <div className="mb-4 flex justify-center" >
-                <button onClick={handleScan} disabled={isScanning || isPreparing} className="flex items-center bg-purple-600 text-white font-bold py-2 px-4 rounded-md hover:bg-purple-700 transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed">
+                <button onClick={handleScan} disabled={isScanning || isPreparing || (activeTab === 'local' && !agentProbe?.online)} className="flex items-center bg-purple-600 text-white font-bold py-2 px-4 rounded-md hover:bg-purple-700 transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed">
                     {isPreparing ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Play className="w-4 h-4 mr-2" />}
                     {isPreparing
                         ? (ipSource === 'third' && prepareTotal > 0
                             ? `解析源 ${prepareDone}/${prepareTotal}`
                             : '准备中...')
-                        : isScanning
-                            ? `测试中... (${progress}/${total})`
-                            : '开始测试'}
+                            : isScanning
+                                ? `测试中... (${progress}/${total})`
+                                : (activeTab === 'local'
+                                    ? (agentProbe?.online ? '开始测试（本地 Agent）' : '本地 Agent 未连接')
+                                    : '开始测试（浏览器）')}
                 </button>
                 {isPreparing && (
                     <button onClick={() => { cancelPreparingRef.current = true; setIsPreparing(false); }} style={{ marginLeft: "8px" }}
@@ -564,6 +875,15 @@ export function ScannerConfig({ cfIps, onScanComplete }: IpScannerConfigAndContr
                                     >
                                         <Play className="w-4 h-4" />
                                     </button>
+                                ) : agentActive ? (
+                                    // 本地 Agent 暂不支持暂停，用不可点状态替代，避免点击无反应
+                                    <span
+                                        aria-label="本地 Agent 模式不支持暂停"
+                                        title="本地 Agent 模式暂不支持暂停，可使用「停止测试」"
+                                        className="p-1.5 rounded-full text-gray-300 bg-gray-100 dark:bg-gray-700 dark:text-gray-500 cursor-not-allowed"
+                                    >
+                                        <Pause className="w-4 h-4" />
+                                    </span>
                                 ) : (
                                     <button
                                         type="button"
