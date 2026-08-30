@@ -71,6 +71,17 @@ export { coloMap, getColoName } from './colo';
 // =================================================================
 
 /**
+ * 将 IPv4 地址转换为十六进制，用于 nip.cmliussss.hidns.vip 技巧
+ */
+function ipToHex(ip: string): string | null {
+    const ipv4Regex = /^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;
+    if (!ipv4Regex.test(ip)) {
+        return null;
+    }
+    return ip.split('.').map(part => parseInt(part, 10).toString(16).padStart(2, '0')).join('');
+}
+
+/**
  * 判断是否为 IPv6 地址
  */
 function isIPv6(ip: string): boolean {
@@ -80,23 +91,32 @@ function isIPv6(ip: string): boolean {
 /**
  * 测试单个 IP 的延迟并获取其 Cloudflare colo
  *
- * 说明：浏览器无法为任意 IP 设置自定义 TLS SNI，因此可靠的逐 IP 测速
- * 应在「本地 Agent」下进行（见 local-agent/）。此浏览器端路径仅作兜底，
- * 对无法直连的 IP 会自然返回失败，从而引导用户改用本地 Agent。
+ * 浏览器无法直接为任意 IP 设置自定义 TLS SNI，故采用「hex 域名技巧」：
+ * 将 IPv4 编码进子域名 <hexIp>.ns.psb.kdns.fr，由 Cloudflare 边缘按
+ * ip.json 端点返回 colo；IPv6 则直接连地址并指定 Host 头。
+ * 该路径依赖浏览器对测速域名的 DNS 解析，解析不通即自然返回失败，
+ * 从而引导用户改用更可靠的「本地 Agent 测速」。
  */
 async function testIpLatency(ip: string, port: number, timeout: number): Promise<Omit<ScanResult, 'isAvailable' | 'ip' | 'port'>> {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeout);
 
-    const headers: Record<string, string> = {
-        'User-Agent': 'Cloudflare-IP-Scanner/1.0',
-        'Host': 'speed.cloudflare.com',
-    };
-    const base = isIPv6(ip) ? `https://[${ip}]:${port}` : `https://${ip}:${port}`;
-    const testUrl = `${base}/cdn-cgi/trace?_t=${Date.now()}`;
+    const headers: Record<string, string> = { 'User-Agent': 'Cloudflare-IP-Scanner/1.0' };
+    let testUrl: string;
+    if (isIPv6(ip)) {
+        // IPv6 无法使用 hex 技巧，直接连接地址并指定 Host 头部，
+        // 由 Cloudflare 边缘按 ip.json 特殊端点返回 colo
+        headers['Host'] = 'ns.psb.kdns.fr';
+        testUrl = `https://[${ip}]:${port}/ip.json?_t=${Date.now()}`;
+    } else {
+        // IPv4 通过 IP 转换得到的十六进制拼接测速域名，返回的 JSON 中 "colo" 字段即为机场码
+        const hexIp = ipToHex(ip);
+        const testDomain = hexIp ? `${hexIp}.ns.psb.kdns.fr` : `${ip}.ns.psb.kdns.fr`;
+        testUrl = `https://${testDomain}:${port}/ip.json?_t=${Date.now()}`;
+    }
 
     try {
-        // 第一次请求用于预热连接，并读取 colo
+        // 第一次请求用于预热 DNS、TLS 等，并获取 colo
         const response1 = await fetch(testUrl, {
             signal: controller.signal,
             headers,
@@ -108,13 +128,13 @@ async function testIpLatency(ip: string, port: number, timeout: number): Promise
 
         let colo = '-';
         try {
-            const text = await response1.text();
-            for (const line of text.split('\n')) {
-                const m = line.match(/^\s*colo\s*=\s*(.*?)\s*$/);
-                if (m) { colo = m[1]; break; }
+            // 该测速地址的响应体包含 colo 信息 (例如 {"colo": "LAX", ...})
+            const data = await response1.json() as { colo?: string };
+            if (data?.colo) {
+                colo = data.colo;
             }
-        } catch {
-            // 解析失败则保留占位
+        } catch (e) {
+            // 如果响应不是 JSON，则忽略
         }
 
         // 第二次请求用于获取更准确的 RTT
@@ -138,17 +158,13 @@ async function testIpLatency(ip: string, port: number, timeout: number): Promise
 }
 
 /**
- * 浏览器端测速可用性自检：尝试对一个样例 CF 边缘 IP 做一次浏览器内直连测速。
- * 由于浏览器无法为任意 IP 设置自定义 TLS SNI，此类逐 IP 测速普遍不可用，
- * 自检失败即提示用户切换到「本地 Agent 测速」。
+ * 浏览器端测速可用性自检：探测测速域名 ns.psb.kdns.fr 能否被解析。
+ * 浏览器逐 IP 测速依赖该域名的 DNS 解析（见 testIpLatency），
+ * 若解析不通则说明当前环境无法进行网页测速，应切换到「本地 Agent 测速」兜底。
  */
-export async function probeBrowserAvailable(timeout = 2500): Promise<boolean> {
-    try {
-        const r = await testIpLatency('162.159.0.1', 443, timeout);
-        return r.latency > 0 && r.colo !== 'Error' && r.colo !== 'Timeout';
-    } catch {
-        return false;
-    }
+export async function probeBrowserAvailable(): Promise<boolean> {
+    const ip = await resolveDomainToIp('ns.psb.kdns.fr');
+    return !!ip;
 }
 
 // =================================================================
