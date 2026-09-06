@@ -158,13 +158,30 @@ async function testIpLatency(ip: string, port: number, timeout: number): Promise
 }
 
 /**
- * 浏览器端测速可用性自检：探测测速域名 ns.psb.kdns.fr 能否被解析。
- * 浏览器逐 IP 测速依赖该域名的 DNS 解析（见 testIpLatency），
- * 若解析不通则说明当前环境无法进行网页测速，应切换到「本地 Agent 测速」兜底。
+ * 浏览器端测速可用性自检：探测测速域名能否被解析。
+ * 注意该域名是通配符解析，裸域 ns.psb.kdns.fr 本身可能无记录，
+ * 因此按实际测速路径，用十六进制编码的样例 IP 子域名去探测
+ * （与 testIpLatency 拼接的 <hexIp>.ns.psb.kdns.fr 完全一致）。
+ *
+ * 为避免单次 DNS 偶发失败造成误判，默认随机取样例 IP 并行探测 10 次，
+ * 只要有一次解析成功即认为当前环境可进行网页测速；
+ * 全部失败才判定不可用，应切换到「本地 Agent 测速」兜底。
+ *
+ * @param sampleIps 页面同步到的 Cloudflare IP 段中随机生成的样例 IP 列表
+ * @param attempts  探测次数，默认 10
  */
-export async function probeBrowserAvailable(): Promise<boolean> {
-    const ip = await resolveDomainToIp('ns.psb.kdns.fr');
-    return !!ip;
+const PROBE_FALLBACK_IPS = ['104.16.0.1', '172.67.0.1', '162.159.0.1', '162.158.0.1', '188.114.96.1', '108.162.192.1'];
+
+export async function probeBrowserAvailable(sampleIps?: string[], attempts = 10): Promise<boolean> {
+    const tasks = Array.from({ length: attempts }, async (_, i) => {
+        const ip = sampleIps?.[i] ?? PROBE_FALLBACK_IPS[Math.floor(Math.random() * PROBE_FALLBACK_IPS.length)];
+        const probeHex = ipToHex(ip);
+        if (!probeHex) return false;
+        const resolved = await resolveDomainToIp(`${probeHex}.ns.psb.kdns.fr`);
+        return !!resolved;
+    });
+    const results = await Promise.all(tasks);
+    return results.some(Boolean);
 }
 
 // =================================================================

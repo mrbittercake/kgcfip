@@ -25,7 +25,7 @@ import {
     type AgentResult, type AgentProbeResult,
 } from '../utils/localAgent';
 import { useToast } from './Toast';
-import { Gauge, Play, StopCircle, Loader2, Pause, Square, Cpu, RefreshCw, AlertTriangle } from 'lucide-react';
+import { Gauge, Play, StopCircle, Loader2, Pause, Square, Cpu, RefreshCw, AlertTriangle, CheckCircle2 } from 'lucide-react';
 import { useConfirm } from './ConfirmDialog';
 
 interface IpScannerConfigAndControlProps {
@@ -112,14 +112,18 @@ export function ScannerConfig({ cfIps, onScanComplete }: IpScannerConfigAndContr
         setBrowserChecking(true);
         setBrowserHealthy(null);
         try {
-            const ok = await probeBrowserAvailable();
+            // 从同步到的 Cloudflare IP 段中随机取样例 IP（10 个）用于自检，避免依赖写死地址
+            const cidrs = cfIps?.ipv4_cidrs?.length ? cfIps.ipv4_cidrs
+                : (cfIps?.cm_cidrs?.length ? cfIps.cm_cidrs : []);
+            const sampleIps = cidrs.length > 0 ? generateRandomIps(cidrs, 10) : undefined;
+            const ok = await probeBrowserAvailable(sampleIps);
             setBrowserHealthy(ok);
         } catch {
             setBrowserHealthy(false);
         } finally {
             setBrowserChecking(false);
         }
-    }, []);
+    }, [cfIps]);
 
     // 进入「浏览器测速」Tab 时做一次自检
     useEffect(() => {
@@ -652,9 +656,13 @@ export function ScannerConfig({ cfIps, onScanComplete }: IpScannerConfigAndContr
                             <p className="text-sm text-gray-500 dark:text-gray-400">正在检测浏览器测速是否可用…</p>
                         )}
                         {!browserChecking && browserHealthy === true && (
-                            <p className="text-sm text-green-600 dark:text-green-400">
-                                浏览器测速可用，可直接点击「开始测试（浏览器）」。
-                            </p>
+                            <div className="flex items-start gap-2.5 rounded-lg border border-green-200 dark:border-green-700/50 bg-green-50 dark:bg-green-900/20 px-4 py-3">
+                                <CheckCircle2 className="w-4 h-4 text-green-500 flex-none mt-0.5" />
+                                <div className="text-sm text-green-800 dark:text-green-300">
+                                    <p>当前环境的浏览器测速可用。</p>
+                                    <p className="mt-1">可直接点击下方「开始测试（浏览器）」进行测速。</p>
+                                </div>
+                            </div>
                         )}
                         {!browserChecking && browserHealthy === false && (
                             <div className="flex items-start gap-2.5 rounded-lg border border-orange-200 dark:border-orange-700/50 bg-orange-50 dark:bg-orange-900/20 px-4 py-3">
